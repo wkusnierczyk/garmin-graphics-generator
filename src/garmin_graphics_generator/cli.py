@@ -3,7 +3,9 @@ CLI entry point for the Garmin Graphics Generator.
 """
 import argparse
 import sys
+
 from garmin_graphics_generator import WatchHeroGenerator
+
 
 def parse_dimensions(dim_str: str) -> tuple[int, int]:
     """
@@ -11,12 +13,13 @@ def parse_dimensions(dim_str: str) -> tuple[int, int]:
     Example: '1440x720' -> (1440, 720)
     """
     try:
-        width, height = map(int, dim_str.lower().split('x'))
+        width, height = map(int, dim_str.lower().split("x"))
         return width, height
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
             f"Dimensions must be in WxH format, got {dim_str}"
         ) from exc
+
 
 def main():
     """
@@ -27,65 +30,50 @@ def main():
     )
 
     parser.add_argument(
-        "--about",
-        action="store_true",
-        help="Print tool information and exit"
+        "--about", action="store_true", help="Print tool information and exit"
     )
 
+    parser.add_argument("--output-directory", help="Directory to save output files")
     parser.add_argument(
-        "--output-directory",
-        help="Directory to save output files"
-    )
-    parser.add_argument(
-        "--size-variation",
-        type=int,
-        default=0,
-        help="0..10, variance in size"
+        "--size-variation", type=int, default=0, help="0..10, variance in size"
     )
     parser.add_argument(
         "--orientation-variation",
         type=int,
         default=0,
-        help="0..90, max rotation angle in degrees"
+        help="0..90, max rotation angle in degrees",
     )
     parser.add_argument(
         "--overlap",
         type=int,
         default=0,
-        help="0..100, percentage of allowed overlap between images"
+        help="0..100, percentage of allowed overlap between images",
     )
     parser.add_argument(
-        "--hero-file-name",
-        default="hero.png",
-        help="Name of the compound hero file"
+        "--hero-file-name", default="hero.png", help="Name of the compound hero file"
     )
     parser.add_argument(
         "--hero-file-size",
         default="1440x720",
         type=parse_dimensions,
-        help="Size of hero file (WxH)"
+        help="Size of hero file (WxH)",
     )
     parser.add_argument(
         "--resized-file-suffix",
         default="_resized",
-        help="Suffix for resized input files"
+        help="Suffix for resized input files",
     )
     parser.add_argument(
-        "--resized-file-width",
-        type=int,
-        default=200,
-        help="Width of resized files"
+        "--resized-file-width", type=int, default=200, help="Width of resized files"
     )
-    parser.add_argument(
-        "input_files",
-        nargs="*",
-        help="Input image files"
-    )
+    parser.add_argument("input_files", nargs="*", help="Input image files")
 
     args = parser.parse_args()
 
     if args.about:
-        print("garmin-graphics-generator: A tool to generate hero images from watch photos.")
+        print(
+            "garmin-graphics-generator: A tool to generate hero images from watch photos."
+        )
         print("├─ version: 0.1.0")
         print("├─ developer: mailto:waclaw.kusnierczyk@gmail.com")
         print("├─ source: https://github.com/wkusnierczyk/garmin_graphics_generator")
@@ -101,8 +89,7 @@ def main():
     generator = WatchHeroGenerator()
 
     (
-        generator
-        .set_output_directory(args.output_directory)
+        generator.set_output_directory(args.output_directory)
         .set_input_paths(args.input_files)
         .set_hero_filename(args.hero_file_name)
         .set_hero_size(args.hero_file_size[0], args.hero_file_size[1])
@@ -115,6 +102,7 @@ def main():
         .generate_hero_composition()
         .generate_resized_files()
     )
+
 
 if __name__ == "__main__":
     main()

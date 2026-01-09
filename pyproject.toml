@@ -5,16 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "garmin_graphics_generator"
 version = "0.1.0"
-description = "A CLI tool to generate hero images from watch photos."
+description = "A CLI tool to generate hero images from watch face screenshots"
 readme = "README.md"
-authors = [{name = "Waclaw Kusnierczyk", email = "waclaw.kusnierczyk@gmail.com"}]
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Waclaw Kusnierczyk", email = "waclaw.kusnierczyk@gmail.com"}
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-requires-python = ">=3.8"
-license = {text = "MIT"}
 dependencies = [
     "Pillow>=10.0.0",
     "rembg>=2.0.50",
@@ -36,7 +38,9 @@ test = [
 ]
 dev = [
     "pylint",
-    "tox"
+    "tox",
+    "black",
+    "isort"
 ]
 
 [tool.pytest.ini_options]

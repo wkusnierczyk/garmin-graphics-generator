@@ -3,23 +3,21 @@ Core logic for the Garmin Graphics Generator.
 Contains the WatchHeroGenerator class which handles the fluent API pipeline.
 """
 import json
-import random
-import os
 import logging
+import os
+import random
 from io import BytesIO
-from typing import List, Tuple
+from typing import List, Optional, Tuple
+
 from PIL import Image
 from rembg import remove
 
-from .constants import (
-    DEFAULT_CONFIG_PATH,
-    EXTENSION_PNG,
-    MODE_RGBA
-)
+from .constants import DEFAULT_CONFIG_PATH, EXTENSION_PNG, MODE_RGBA
 
 # Load defaults from JSON to separate data from logic
 with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as _f:
     _DEFAULTS = json.load(_f)
+
 
 class WatchHeroGenerator:
     """
@@ -34,7 +32,7 @@ class WatchHeroGenerator:
         self._hero_file_name: str = _DEFAULTS["hero_filename"]
         self._hero_size: Tuple[int, int] = (
             _DEFAULTS["hero_width"],
-            _DEFAULTS["hero_height"]
+            _DEFAULTS["hero_height"],
         )
         self._resized_suffix: str = _DEFAULTS["resized_suffix"]
         self._resized_width: int = _DEFAULTS["resized_width"]
@@ -75,7 +73,9 @@ class WatchHeroGenerator:
         self._resized_width = width
         return self
 
-    def set_variations(self, size_var: int, orientation_var: int) -> "WatchHeroGenerator":
+    def set_variations(
+        self, size_var: int, orientation_var: int
+    ) -> "WatchHeroGenerator":
         """
         Sets variation parameters.
         :param size_var: 0-10 scale for size randomness.
@@ -110,7 +110,6 @@ class WatchHeroGenerator:
             try:
                 with open(file_path, "rb") as input_file:
                     input_data = input_file.read()
-                    # Remove background using rembg
                     output_data = remove(input_data)
 
                     image = Image.open(BytesIO(output_data)).convert(MODE_RGBA)
@@ -134,8 +133,7 @@ class WatchHeroGenerator:
             new_height = int(self._resized_width * aspect_ratio)
 
             resized_image = image.resize(
-                (self._resized_width, new_height),
-                Image.Resampling.LANCZOS
+                (self._resized_width, new_height), Image.Resampling.LANCZOS
             )
 
             output_filename = f"{name}{self._resized_suffix}{EXTENSION_PNG}"
@@ -154,48 +152,28 @@ class WatchHeroGenerator:
             return self
 
         hero_image = Image.new(MODE_RGBA, self._hero_size, (255, 255, 255, 0))
-        canvas_w, canvas_h = self._hero_size
 
         images_to_place = self._processed_images[:]
         random.shuffle(images_to_place)
 
         # Store occupied rectangles: (x, y, width, height)
         placed_rects: List[Tuple[int, int, int, int]] = []
-        max_attempts = 100
 
         for base_image in images_to_place:
-            final_image = self._apply_random_transforms(base_image)
-            img_w, img_h = final_image.size
+            # Prepare image (rotate, scale, fit to canvas bounds)
+            final_image = self._prepare_image_for_canvas(base_image)
 
-            # Ensure image fits within canvas dimensions at all
-            if img_w > canvas_w or img_h > canvas_h:
-                ratio = min(canvas_w / img_w, canvas_h / img_h)
-                img_w = int(img_w * ratio)
-                img_h = int(img_h * ratio)
-                final_image = final_image.resize((img_w, img_h), Image.Resampling.LANCZOS)
+            # Attempt to find a non-colliding position
+            position = self._find_valid_position(final_image.size, placed_rects)
 
-            # Try to place the image N times
-            placed = False
-            for _ in range(max_attempts):
-                max_x = max(0, canvas_w - img_w)
-                max_y = max(0, canvas_h - img_h)
-
-                pos_x = random.randint(0, max_x)
-                pos_y = random.randint(0, max_y)
-
-                new_rect = (pos_x, pos_y, img_w, img_h)
-
-                if not self._check_collision(new_rect, placed_rects):
-                    # No collision found, place it
-                    hero_image.paste(final_image, (pos_x, pos_y), final_image)
-                    placed_rects.append(new_rect)
-                    placed = True
-                    break
-
-            if not placed:
-                logging.warning(
-                    "Could not place an image after %d attempts (too crowded?)", max_attempts
+            if position:
+                pos_x, pos_y = position
+                hero_image.paste(final_image, (pos_x, pos_y), final_image)
+                placed_rects.append(
+                    (pos_x, pos_y, final_image.width, final_image.height)
                 )
+            else:
+                logging.warning("Could not place an image (too crowded?)")
 
         output_path = os.path.join(self._output_directory, self._hero_file_name)
         hero_image.save(output_path)
@@ -203,10 +181,54 @@ class WatchHeroGenerator:
 
         return self
 
+    def _prepare_image_for_canvas(self, base_image: Image.Image) -> Image.Image:
+        """
+        Applies transforms and ensures the image fits within canvas dimensions.
+        """
+        final_image = self._apply_random_transforms(base_image)
+        img_w, img_h = final_image.size
+        canvas_w, canvas_h = self._hero_size
+
+        if img_w > canvas_w or img_h > canvas_h:
+            ratio = min(canvas_w / img_w, canvas_h / img_h)
+            img_w = int(img_w * ratio)
+            img_h = int(img_h * ratio)
+            # Ensure at least 1px
+            img_w = max(1, img_w)
+            img_h = max(1, img_h)
+            final_image = final_image.resize((img_w, img_h), Image.Resampling.LANCZOS)
+
+        return final_image
+
+    def _find_valid_position(
+        self, image_size: Tuple[int, int], placed_rects: List[Tuple[int, int, int, int]]
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Attempts to find a random position for the given image size that does not
+        violate collision constraints.
+        """
+        img_w, img_h = image_size
+        canvas_w, canvas_h = self._hero_size
+        max_attempts = 100
+
+        max_x = max(0, canvas_w - img_w)
+        max_y = max(0, canvas_h - img_h)
+
+        for _ in range(max_attempts):
+            pos_x = random.randint(0, max_x)
+            pos_y = random.randint(0, max_y)
+
+            new_rect = (pos_x, pos_y, img_w, img_h)
+
+            if not self._check_collision(new_rect, placed_rects):
+                return (pos_x, pos_y)
+
+        return None
+
     def _check_collision(
         self,
         new_rect: Tuple[int, int, int, int],
-        placed_rects: List[Tuple[int, int, int, int]]
+        placed_rects: List[Tuple[int, int, int, int]],
     ) -> bool:
         """
         Checks if new_rect overlaps with any existing rect beyond the allowed
@@ -215,41 +237,53 @@ class WatchHeroGenerator:
         if self._max_overlap >= 100:
             return False  # Overlap fully allowed
 
-        nx, ny, nw, nh = new_rect
-        new_area = nw * nh
+        for placed_rect in placed_rects:
+            overlap_pct = self._calculate_overlap_percentage(new_rect, placed_rect)
 
-        for (px, py, pw, ph) in placed_rects:
-            # Calculate intersection rectangle
-            ix = max(nx, px)
-            iy = max(ny, py)
-            iw = min(nx + nw, px + pw) - ix
-            ih = min(ny + nh, py + ph) - iy
+            # If overlap is 0 (strict), any intersection > 0 is a collision
+            if self._max_overlap == 0 and overlap_pct > 0:
+                return True
 
-            # Check if there is an intersection
-            if iw > 0 and ih > 0:
-                intersection_area = iw * ih
-
-                # If overlap is 0 (strict), any intersection is a collision
-                if self._max_overlap == 0:
-                    return True
-
-                # Otherwise calculate percentage
-                existing_area = pw * ph
-
-                # We define overlap percentage relative to the SMALLER of the two objects.
-                # This prevents a small watch from being completely hidden by a large one.
-                min_area = min(new_area, existing_area)
-                overlap_percent = (intersection_area / min_area) * 100
-
-                if overlap_percent > self._max_overlap:
-                    return True
+            if overlap_pct > self._max_overlap:
+                return True
 
         return False
 
+    def _calculate_overlap_percentage(
+        self, rect1: Tuple[int, int, int, int], rect2: Tuple[int, int, int, int]
+    ) -> float:
+        """
+        Calculates the overlap percentage relative to the smaller of the two rectangles.
+        Rect format: (x, y, w, h)
+        """
+        # Calculate intersection dimensions directly using tuple indices
+        # max(x1, x2)
+        inter_x = max(rect1[0], rect2[0])
+        inter_y = max(rect1[1], rect2[1])
+
+        # min(x1+w1, x2+w2) - inter_x
+        inter_w = min(rect1[0] + rect1[2], rect2[0] + rect2[2]) - inter_x
+        inter_h = min(rect1[1] + rect1[3], rect2[1] + rect2[3]) - inter_y
+
+        if inter_w <= 0 or inter_h <= 0:
+            return 0.0
+
+        intersection_area = inter_w * inter_h
+
+        # Use indices for area calculation
+        area1 = rect1[2] * rect1[3]
+        area2 = rect2[2] * rect2[3]
+
+        min_area = min(area1, area2)
+
+        if min_area == 0:
+            return 0.0
+
+        return (intersection_area / min_area) * 100.0
+
     def _apply_random_transforms(self, image: Image.Image) -> Image.Image:
         """
-        Applies random rotation and size scaling to an image based on
-        configured variation parameters.
+        Applies random rotation and size scaling to an image.
         """
         # 1. Orientation
         angle = 0

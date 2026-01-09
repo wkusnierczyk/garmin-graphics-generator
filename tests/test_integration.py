@@ -1,6 +1,8 @@
 import os
+
 import pytest
 from PIL import Image
+
 from garmin_graphics_generator.core import WatchHeroGenerator
 
 
@@ -19,8 +21,7 @@ def test_full_flow_with_generated_dummy_images(tmp_path):
     # Run Generator
     gen = WatchHeroGenerator()
     (
-        gen
-        .set_input_paths([str(img_path)])
+        gen.set_input_paths([str(img_path)])
         .set_output_directory(str(output_dir))
         .set_hero_filename("hero.png")
         .set_resized_suffix("_small")

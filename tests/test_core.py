@@ -1,6 +1,8 @@
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from PIL import Image
+
 from garmin_graphics_generator.core import WatchHeroGenerator
 
 
@@ -14,9 +16,7 @@ def test_fluent_api_configuration():
     gen = WatchHeroGenerator()
     # Test that methods return self and set state
     res = (
-        gen.set_output_directory("test_dir")
-        .set_resized_width(300)
-        .set_max_overlap(50)
+        gen.set_output_directory("test_dir").set_resized_width(300).set_max_overlap(50)
     )
 
     assert res == gen
@@ -63,7 +63,9 @@ def test_collision_logic():
 @patch("builtins.open")
 @patch("os.path.exists")
 @patch("os.makedirs")
-def test_pipeline_execution(mock_makedirs, mock_exists, mock_open, mock_remove, mock_image):
+def test_pipeline_execution(
+    mock_makedirs, mock_exists, mock_open, mock_remove, mock_image
+):
     """
     Test the full chain without actually doing heavy image processing.
     """
@@ -90,12 +92,9 @@ def test_pipeline_execution(mock_makedirs, mock_exists, mock_open, mock_remove, 
         mock_pil_open.return_value = mock_image
 
         gen = WatchHeroGenerator()
-        gen.set_input_paths(["watch1.jpg"]) \
-            .set_output_directory("out") \
-            .set_max_overlap(20) \
-            .prepare_output_directory() \
-            .process_input_images() \
-            .generate_resized_files()
+        gen.set_input_paths(["watch1.jpg"]).set_output_directory("out").set_max_overlap(
+            20
+        ).prepare_output_directory().process_input_images().generate_resized_files()
 
         # Verify directory creation
         mock_makedirs.assert_called_with("out")
