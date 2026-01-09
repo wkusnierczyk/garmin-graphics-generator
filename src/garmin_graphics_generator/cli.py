@@ -2,6 +2,7 @@
 CLI entry point for the Garmin Graphics Generator.
 """
 import argparse
+import logging
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
@@ -22,6 +23,22 @@ def parse_dimensions(dim_str: str) -> tuple[int, int]:
         ) from exc
 
 
+def setup_logging(verbose: bool, silent: bool):
+    """
+    Configures the root logger to print to stderr.
+    """
+    if silent:
+        level = logging.ERROR
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    logging.basicConfig(
+        level=level, format="%(levelname)s: %(message)s", stream=sys.stderr
+    )
+
+
 def main():
     """
     Main function to parse arguments and execute the generator pipeline.
@@ -34,42 +51,75 @@ def main():
         "--about", action="store_true", help="Print tool information and exit"
     )
 
-    parser.add_argument("--output-directory", help="Directory to save output files")
+    # Output Control
     parser.add_argument(
-        "--size-variation", type=int, default=0, help="0..10, variance in size"
+        "-o", "--output-directory", help="Directory to save output files"
+    )
+
+    # Hero Image Config
+    parser.add_argument(
+        "-n",
+        "--hero-file-name",
+        default="hero.png",
+        help="Name of the compound hero file",
     )
     parser.add_argument(
-        "--orientation-variation",
-        type=int,
-        default=0,
-        help="0..90, max rotation angle in degrees",
-    )
-    parser.add_argument(
-        "--overlap",
-        type=int,
-        default=0,
-        help="0..100, percentage of allowed overlap between images",
-    )
-    parser.add_argument(
-        "--hero-file-name", default="hero.png", help="Name of the compound hero file"
-    )
-    parser.add_argument(
+        "-H",
         "--hero-file-size",
         default="1440x720",
         type=parse_dimensions,
         help="Size of hero file (WxH)",
     )
     parser.add_argument(
+        "-l",
+        "--overlap",
+        type=int,
+        default=0,
+        help="0..100, percentage of allowed overlap between images",
+    )
+
+    # Variations
+    parser.add_argument(
+        "-s", "--size-variation", type=int, default=0, help="0..10, variance in size"
+    )
+    parser.add_argument(
+        "-r",
+        "--orientation-variation",
+        type=int,
+        default=0,
+        help="0..90, max rotation angle in degrees",
+    )
+
+    # Resize Config
+    parser.add_argument(
         "--resized-file-suffix",
         default="_resized",
         help="Suffix for resized input files",
     )
     parser.add_argument(
-        "--resized-file-width", type=int, default=200, help="Width of resized files"
+        "-w",
+        "--resized-file-width",
+        type=int,
+        default=200,
+        help="Width of resized files",
     )
+
+    # Verbosity
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose output"
+    )
+    group.add_argument(
+        "-q", "--silent", action="store_true", help="Suppress all output except errors"
+    )
+
+    # Inputs
     parser.add_argument("input_files", nargs="*", help="Input image files")
 
     args = parser.parse_args()
+
+    # Configure Logging immediately after parsing
+    setup_logging(args.verbose, args.silent)
 
     if args.about:
         try:
@@ -77,6 +127,7 @@ def main():
         except PackageNotFoundError:
             tool_version = "unknown"
 
+        # Using print here (stdout) as this is requested data, not log info
         print(
             "garmin-graphics-generator: "
             "A CLI tool to generate hero images from watch face screenshots"
@@ -90,7 +141,7 @@ def main():
     if not args.output_directory or not args.input_files:
         parser.error(
             "the following arguments are required: "
-            "--output-directory, input_files (unless using --about)"
+            "-o/--output-directory, input_files (unless using --about)"
         )
 
     generator = WatchHeroGenerator()

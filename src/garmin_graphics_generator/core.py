@@ -4,6 +4,7 @@ Contains the WatchHeroGenerator class which handles the fluent API pipeline.
 """
 import json
 import logging
+import math
 import os
 import random
 from io import BytesIO
@@ -17,6 +18,9 @@ from .constants import DEFAULT_CONFIG_PATH, EXTENSION_PNG, MODE_RGBA
 # Load defaults from JSON to separate data from logic
 with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as _f:
     _DEFAULTS = json.load(_f)
+
+# Configure logger for this module
+logger = logging.getLogger(__name__)
 
 
 class WatchHeroGenerator:
@@ -88,8 +92,6 @@ class WatchHeroGenerator:
     def set_max_overlap(self, overlap_percent: int) -> "WatchHeroGenerator":
         """
         Sets the allowed overlap percentage (0-100).
-        0 means no overlap allowed.
-        100 means full overlap allowed.
         """
         self._max_overlap = max(0, min(100, overlap_percent))
         return self
@@ -97,6 +99,7 @@ class WatchHeroGenerator:
     def prepare_output_directory(self) -> "WatchHeroGenerator":
         """Ensures the output directory exists."""
         if not os.path.exists(self._output_directory):
+            logger.info("Creating output directory: %s", self._output_directory)
             os.makedirs(self._output_directory)
         return self
 
@@ -106,7 +109,12 @@ class WatchHeroGenerator:
         Stores them in memory for the hero generation step.
         """
         self._processed_images = []
-        for file_path in self._input_paths:
+        total_files = len(self._input_paths)
+
+        logger.info("Starting background removal for %d images...", total_files)
+
+        for index, file_path in enumerate(self._input_paths):
+            logger.info("[%d/%d] Processing: %s", index + 1, total_files, file_path)
             try:
                 with open(file_path, "rb") as input_file:
                     input_data = input_file.read()
@@ -115,7 +123,7 @@ class WatchHeroGenerator:
                     image = Image.open(BytesIO(output_data)).convert(MODE_RGBA)
                     self._processed_images.append(image)
             except (IOError, OSError) as error:
-                logging.error("Error processing %s: %s", file_path, error)
+                logger.error("Failed to process %s: %s", file_path, error)
 
         return self
 
@@ -124,6 +132,11 @@ class WatchHeroGenerator:
         Resizes the original input images (using the transparent version)
         to the specified width and saves them.
         """
+        if not self._processed_images:
+            return self
+
+        logger.info("Generating individual resized images...")
+
         for index, image in enumerate(self._processed_images):
             original_path = self._input_paths[index]
             filename = os.path.basename(original_path)
@@ -140,7 +153,7 @@ class WatchHeroGenerator:
             output_path = os.path.join(self._output_directory, output_filename)
 
             resized_image.save(output_path)
-            print(f"Saved resized image: {output_path}")
+            logger.debug("Saved resized image: %s", output_path)
 
         return self
 
@@ -151,17 +164,23 @@ class WatchHeroGenerator:
         if not self._processed_images:
             return self
 
+        logger.info("Generating hero composition (%dx%d)...", *self._hero_size)
+
         hero_image = Image.new(MODE_RGBA, self._hero_size, (255, 255, 255, 0))
 
         images_to_place = self._processed_images[:]
         random.shuffle(images_to_place)
 
-        # Store occupied rectangles: (x, y, width, height)
+        # Calculate a safe scale factor to ensure all images can actually fit
+        base_scale = self._calculate_auto_scale_factor(len(images_to_place))
+
         placed_rects: List[Tuple[int, int, int, int]] = []
 
-        for base_image in images_to_place:
+        for i, base_image in enumerate(images_to_place):
+            logger.debug("Placing image %d/%d...", i + 1, len(images_to_place))
+
             # Prepare image (rotate, scale, fit to canvas bounds)
-            final_image = self._prepare_image_for_canvas(base_image)
+            final_image = self._prepare_image_for_canvas(base_image, base_scale)
 
             # Attempt to find a non-colliding position
             position = self._find_valid_position(final_image.size, placed_rects)
@@ -173,22 +192,63 @@ class WatchHeroGenerator:
                     (pos_x, pos_y, final_image.width, final_image.height)
                 )
             else:
-                logging.warning("Could not place an image (too crowded?)")
+                logger.warning(
+                    "Could not place image %d after multiple attempts (too crowded). "
+                    "Try increasing --overlap or reducing variations.",
+                    i + 1,
+                )
 
         output_path = os.path.join(self._output_directory, self._hero_file_name)
         hero_image.save(output_path)
-        print(f"Saved hero image: {output_path}")
+        logger.info("Saved hero image: %s", output_path)
 
         return self
 
-    def _prepare_image_for_canvas(self, base_image: Image.Image) -> Image.Image:
+    def _calculate_auto_scale_factor(self, num_images: int) -> float:
         """
-        Applies transforms and ensures the image fits within canvas dimensions.
+        Determines a scaling factor for input images to ensure they fit
+        on the canvas without excessive overcrowding.
         """
+        if num_images <= 1:
+            return 1.0
+
+        canvas_w, canvas_h = self._hero_size
+        canvas_area = canvas_w * canvas_h
+
+        # Heuristic: Aim for total image area to cover roughly 60% of canvas
+        # to allow for spacing and rotation buffers.
+        target_total_area = canvas_area * 0.6
+        target_area_per_image = target_total_area / num_images
+
+        # We assume images are roughly square for this estimation
+        target_dim = math.sqrt(target_area_per_image)
+
+        return target_dim
+
+    def _prepare_image_for_canvas(
+        self, base_image: Image.Image, target_dim_heuristic: float
+    ) -> Image.Image:
+        """
+        Applies transforms and ensures the image fits within canvas dimensions
+        and the heuristic target size.
+        """
+        # 1. First, scale down if the raw image is vastly larger than our heuristic
+        # This solves the "input images larger than target" issue for batches.
+        current_max = max(base_image.width, base_image.height)
+
+        # Use chained comparison 0 < target < max
+        if 0 < target_dim_heuristic < current_max:
+            ratio = target_dim_heuristic / current_max
+            new_w = int(base_image.width * ratio)
+            new_h = int(base_image.height * ratio)
+            base_image = base_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        # 2. Apply random variations
         final_image = self._apply_random_transforms(base_image)
         img_w, img_h = final_image.size
         canvas_w, canvas_h = self._hero_size
 
+        # 3. Hard cap: Ensure it fits in canvas (100%)
         if img_w > canvas_w or img_h > canvas_h:
             ratio = min(canvas_w / img_w, canvas_h / img_h)
             img_w = int(img_w * ratio)
@@ -257,11 +317,9 @@ class WatchHeroGenerator:
         Rect format: (x, y, w, h)
         """
         # Calculate intersection dimensions directly using tuple indices
-        # max(x1, x2)
         inter_x = max(rect1[0], rect2[0])
         inter_y = max(rect1[1], rect2[1])
 
-        # min(x1+w1, x2+w2) - inter_x
         inter_w = min(rect1[0] + rect1[2], rect2[0] + rect2[2]) - inter_x
         inter_h = min(rect1[1] + rect1[3], rect2[1] + rect2[3]) - inter_y
 
@@ -270,7 +328,6 @@ class WatchHeroGenerator:
 
         intersection_area = inter_w * inter_h
 
-        # Use indices for area calculation
         area1 = rect1[2] * rect1[3]
         area2 = rect2[2] * rect2[3]
 
