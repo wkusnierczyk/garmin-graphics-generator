@@ -3,6 +3,7 @@ CLI entry point for the Garmin Graphics Generator.
 """
 import argparse
 import sys
+from importlib.metadata import PackageNotFoundError, version
 
 from garmin_graphics_generator import WatchHeroGenerator
 
@@ -26,7 +27,7 @@ def main():
     Main function to parse arguments and execute the generator pipeline.
     """
     parser = argparse.ArgumentParser(
-        description="Generate a hero image from watch photos."
+        description="Generate a hero image from watch face screenshots."
     )
 
     parser.add_argument(
@@ -71,10 +72,16 @@ def main():
     args = parser.parse_args()
 
     if args.about:
+        try:
+            tool_version = version("garmin_graphics_generator")
+        except PackageNotFoundError:
+            tool_version = "unknown"
+
         print(
-            "garmin-graphics-generator: A tool to generate hero images from watch photos."
+            "garmin-graphics-generator: "
+            "A CLI tool to generate hero images from watch face screenshots"
         )
-        print("├─ version: 0.1.0")
+        print(f"├─ version: {tool_version}")
         print("├─ developer: mailto:waclaw.kusnierczyk@gmail.com")
         print("├─ source: https://github.com/wkusnierczyk/garmin_graphics_generator")
         print("└─ licence: MIT https://opensource.org/licenses/MIT")
