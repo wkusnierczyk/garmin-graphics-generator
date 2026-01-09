@@ -132,10 +132,10 @@ def main():
             "garmin-graphics-generator: "
             "A CLI tool to generate hero images from watch face screenshots"
         )
-        print(f"├─ version: {tool_version}")
+        print(f"├─ version:   {tool_version}")
         print("├─ developer: mailto:waclaw.kusnierczyk@gmail.com")
-        print("├─ source: https://github.com/wkusnierczyk/garmin_graphics_generator")
-        print("└─ licence: MIT https://opensource.org/licenses/MIT")
+        print("├─ source:    https://github.com/wkusnierczyk/garmin_graphics_generator")
+        print("└─ licence:   MIT https://opensource.org/licenses/MIT")
         sys.exit(0)
 
     if not args.output_directory or not args.input_files:
