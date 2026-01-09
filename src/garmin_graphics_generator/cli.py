@@ -5,7 +5,6 @@ import argparse
 import sys
 from garmin_graphics_generator import WatchHeroGenerator
 
-
 def parse_dimensions(dim_str: str) -> tuple[int, int]:
     """
     Parses a string in the format WxH into a tuple of integers.
@@ -18,7 +17,6 @@ def parse_dimensions(dim_str: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError(
             f"Dimensions must be in WxH format, got {dim_str}"
         ) from exc
-
 
 def main():
     """
@@ -49,6 +47,12 @@ def main():
         type=int,
         default=0,
         help="0..90, max rotation angle in degrees"
+    )
+    parser.add_argument(
+        "--overlap",
+        type=int,
+        default=0,
+        help="0..100, percentage of allowed overlap between images"
     )
     parser.add_argument(
         "--hero-file-name",
@@ -105,12 +109,12 @@ def main():
         .set_resized_suffix(args.resized_file_suffix)
         .set_resized_width(args.resized_file_width)
         .set_variations(args.size_variation, args.orientation_variation)
+        .set_max_overlap(args.overlap)
         .prepare_output_directory()
         .process_input_images()
         .generate_hero_composition()
         .generate_resized_files()
     )
-
 
 if __name__ == "__main__":
     main()

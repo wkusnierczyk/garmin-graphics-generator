@@ -11,7 +11,6 @@ from typing import List, Tuple
 from PIL import Image
 from rembg import remove
 
-# Correct relative import
 from .constants import (
     DEFAULT_CONFIG_PATH,
     EXTENSION_PNG,
@@ -21,7 +20,6 @@ from .constants import (
 # Load defaults from JSON to separate data from logic
 with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as _f:
     _DEFAULTS = json.load(_f)
-
 
 class WatchHeroGenerator:
     """
@@ -42,6 +40,7 @@ class WatchHeroGenerator:
         self._resized_width: int = _DEFAULTS["resized_width"]
         self._size_variation: int = _DEFAULTS["size_variation"]
         self._orientation_variation: int = _DEFAULTS["orientation_variation"]
+        self._max_overlap: int = _DEFAULTS["max_overlap"]
 
         # Internal state
         self._processed_images: List[Image.Image] = []
@@ -84,6 +83,15 @@ class WatchHeroGenerator:
         """
         self._size_variation = size_var
         self._orientation_variation = orientation_var
+        return self
+
+    def set_max_overlap(self, overlap_percent: int) -> "WatchHeroGenerator":
+        """
+        Sets the allowed overlap percentage (0-100).
+        0 means no overlap allowed.
+        100 means full overlap allowed.
+        """
+        self._max_overlap = max(0, min(100, overlap_percent))
         return self
 
     def prepare_output_directory(self) -> "WatchHeroGenerator":
@@ -140,25 +148,103 @@ class WatchHeroGenerator:
 
     def generate_hero_composition(self) -> "WatchHeroGenerator":
         """
-        Creates the hero image by scattering watches across the canvas.
+        Creates the hero image by scattering watches across the canvas with collision detection.
         """
         if not self._processed_images:
             return self
 
-        # Transparent background
         hero_image = Image.new(MODE_RGBA, self._hero_size, (255, 255, 255, 0))
+        canvas_w, canvas_h = self._hero_size
 
         images_to_place = self._processed_images[:]
         random.shuffle(images_to_place)
 
+        # Store occupied rectangles: (x, y, width, height)
+        placed_rects: List[Tuple[int, int, int, int]] = []
+        max_attempts = 100
+
         for base_image in images_to_place:
-            self._process_and_place_image(hero_image, base_image)
+            final_image = self._apply_random_transforms(base_image)
+            img_w, img_h = final_image.size
+
+            # Ensure image fits within canvas dimensions at all
+            if img_w > canvas_w or img_h > canvas_h:
+                ratio = min(canvas_w / img_w, canvas_h / img_h)
+                img_w = int(img_w * ratio)
+                img_h = int(img_h * ratio)
+                final_image = final_image.resize((img_w, img_h), Image.Resampling.LANCZOS)
+
+            # Try to place the image N times
+            placed = False
+            for _ in range(max_attempts):
+                max_x = max(0, canvas_w - img_w)
+                max_y = max(0, canvas_h - img_h)
+
+                pos_x = random.randint(0, max_x)
+                pos_y = random.randint(0, max_y)
+
+                new_rect = (pos_x, pos_y, img_w, img_h)
+
+                if not self._check_collision(new_rect, placed_rects):
+                    # No collision found, place it
+                    hero_image.paste(final_image, (pos_x, pos_y), final_image)
+                    placed_rects.append(new_rect)
+                    placed = True
+                    break
+
+            if not placed:
+                logging.warning(
+                    "Could not place an image after %d attempts (too crowded?)", max_attempts
+                )
 
         output_path = os.path.join(self._output_directory, self._hero_file_name)
         hero_image.save(output_path)
         print(f"Saved hero image: {output_path}")
 
         return self
+
+    def _check_collision(
+        self,
+        new_rect: Tuple[int, int, int, int],
+        placed_rects: List[Tuple[int, int, int, int]]
+    ) -> bool:
+        """
+        Checks if new_rect overlaps with any existing rect beyond the allowed
+        _max_overlap threshold.
+        """
+        if self._max_overlap >= 100:
+            return False  # Overlap fully allowed
+
+        nx, ny, nw, nh = new_rect
+        new_area = nw * nh
+
+        for (px, py, pw, ph) in placed_rects:
+            # Calculate intersection rectangle
+            ix = max(nx, px)
+            iy = max(ny, py)
+            iw = min(nx + nw, px + pw) - ix
+            ih = min(ny + nh, py + ph) - iy
+
+            # Check if there is an intersection
+            if iw > 0 and ih > 0:
+                intersection_area = iw * ih
+
+                # If overlap is 0 (strict), any intersection is a collision
+                if self._max_overlap == 0:
+                    return True
+
+                # Otherwise calculate percentage
+                existing_area = pw * ph
+
+                # We define overlap percentage relative to the SMALLER of the two objects.
+                # This prevents a small watch from being completely hidden by a large one.
+                min_area = min(new_area, existing_area)
+                overlap_percent = (intersection_area / min_area) * 100
+
+                if overlap_percent > self._max_overlap:
+                    return True
+
+        return False
 
     def _apply_random_transforms(self, image: Image.Image) -> Image.Image:
         """
@@ -194,39 +280,3 @@ class WatchHeroGenerator:
                 )
 
         return transformed
-
-    def _process_and_place_image(self, hero_image: Image.Image, base_image: Image.Image):
-        """
-        Orchestrates the transformation and placement of a single image onto the canvas.
-        """
-        # Get transformed image (rotated and scaled)
-        final_image = self._apply_random_transforms(base_image)
-
-        img_w, img_h = final_image.size
-        canvas_w, canvas_h = self._hero_size
-
-        max_x = canvas_w - img_w
-        max_y = canvas_h - img_h
-
-        # 3. Fit to Canvas (if random scaling made it too big)
-        if max_x < 0 or max_y < 0:
-            ratio = min(canvas_w / img_w, canvas_h / img_h)
-            new_w = int(img_w * ratio)
-            new_h = int(img_h * ratio)
-
-            # Ensure at least 1px
-            new_w = max(1, new_w)
-            new_h = max(1, new_h)
-
-            final_image = final_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-            # Recalculate margins
-            max_x = canvas_w - new_w
-            max_y = canvas_h - new_h
-
-        # 4. Random Position (Scatter)
-        # Ensure we don't pass negative range to randint
-        pos_x = random.randint(0, max(0, max_x))
-        pos_y = random.randint(0, max(0, max_y))
-
-        hero_image.paste(final_image, (pos_x, pos_y), final_image)
