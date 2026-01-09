@@ -110,11 +110,20 @@ class WatchHeroGenerator:
         """
         self._processed_images = []
         total_files = len(self._input_paths)
+        pad_width = len(str(total_files))
 
         logger.info("Starting background removal for %d images...", total_files)
 
         for index, file_path in enumerate(self._input_paths):
-            logger.info("[%d/%d] Processing: %s", index + 1, total_files, file_path)
+            current_num = index + 1
+            # Format: [ 9/39] with space padding
+            logger.info(
+                "[%*d/%d] Processing: %s",
+                pad_width,
+                current_num,
+                total_files,
+                file_path,
+            )
             try:
                 with open(file_path, "rb") as input_file:
                     input_data = input_file.read()
@@ -176,8 +185,12 @@ class WatchHeroGenerator:
 
         placed_rects: List[Tuple[int, int, int, int]] = []
 
+        total_files = len(images_to_place)
+        pad_width = len(str(total_files))
+
         for i, base_image in enumerate(images_to_place):
-            logger.debug("Placing image %d/%d...", i + 1, len(images_to_place))
+            current_num = i + 1
+            logger.debug("Placing image %*d/%d...", pad_width, current_num, total_files)
 
             # Prepare image (rotate, scale, fit to canvas bounds)
             final_image = self._prepare_image_for_canvas(base_image, base_scale)
@@ -195,7 +208,7 @@ class WatchHeroGenerator:
                 logger.warning(
                     "Could not place image %d after multiple attempts (too crowded). "
                     "Try increasing --overlap or reducing variations.",
-                    i + 1,
+                    current_num,
                 )
 
         output_path = os.path.join(self._output_directory, self._hero_file_name)
