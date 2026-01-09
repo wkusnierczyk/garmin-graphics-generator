@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+.tox/
+venv/
+.env
+*.log
+# Output directories from tests or runs
+output/
+test_output/
