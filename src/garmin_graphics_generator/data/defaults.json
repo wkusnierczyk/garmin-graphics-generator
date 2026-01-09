@@ -1,0 +1,11 @@
+{
+  "output_directory": "output",
+  "hero_filename": "hero.png",
+  "hero_width": 1440,
+  "hero_height": 720,
+  "resized_suffix": "_resized",
+  "resized_width": 200,
+  "size_variation": 0,
+  "orientation_variation": 0,
+  "max_overlap": 0
+}

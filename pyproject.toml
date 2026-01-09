@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "garmin_graphics_generator"
+version = "0.2.2"
+description = "A CLI tool to generate hero images from watch face screenshots"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Waclaw Kusnierczyk", email = "waclaw.kusnierczyk@gmail.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "Pillow>=10.0.0",
+    "rembg>=2.0.50",
+    "numpy>=1.24.0",
+    "onnxruntime>=1.16.0"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/wkusnierczyk/garmin_graphics_generator"
+"Source" = "https://github.com/wkusnierczyk/garmin_graphics_generator"
+
+[project.scripts]
+garmin-graphics-generator = "garmin_graphics_generator.cli:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov"
+]
+dev = [
+    "pylint",
+    "tox",
+    "black",
+    "isort"
+]
+
+[tool.setuptools.package-data]
+garmin_graphics_generator = ["data/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = "src"
+testpaths = ["tests"]
