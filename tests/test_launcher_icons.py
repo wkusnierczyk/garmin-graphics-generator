@@ -285,6 +285,20 @@ def test_check_catches_an_unmapped_product(tmp_path):
     assert any("tiny" in message for message in failures)
 
 
+def test_check_catches_a_declaration_naming_the_wrong_file(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    declaration = project / "resources-icon-38/drawables/drawables.xml"
+    # Still contains "LauncherIcon", so a substring check would pass it.
+    declaration.write_text(
+        declaration.read_text().replace("launcher_icon", "wrong_icon")
+    )
+    failures = [
+        message for passed, message in generator(project, devices).check() if not passed
+    ]
+    assert any("declares LauncherIcon" in message for message in failures)
+
+
 def test_check_catches_an_orphaned_icon_directory(tmp_path):
     project, devices = make_project(tmp_path)
     generator(project, devices).generate_icons().write_mapping()

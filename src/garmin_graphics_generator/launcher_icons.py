@@ -385,8 +385,17 @@ class LauncherIconGenerator:
             declared = os.path.exists(declaration)
             if declared:
                 with open(declaration, "r", encoding="utf-8") as handle:
-                    declared = "LauncherIcon" in handle.read()
-            report.append((declared, f"{declaration} declares LauncherIcon"))
+                    # Compared whole rather than searched for "LauncherIcon": the file
+                    # is generated, and a declaration naming the wrong filename
+                    # contains that substring too and would pass, only to fail at
+                    # compile time.
+                    declared = handle.read() == DRAWABLES_XML
+            report.append(
+                (
+                    declared,
+                    f"{declaration} declares LauncherIcon -> {LAUNCHER_ICON_NAME}",
+                )
+            )
 
         orphans = self.unmapped_directories(set(mapped.values()))
         report.append(
