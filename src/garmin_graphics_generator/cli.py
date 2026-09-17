@@ -219,11 +219,16 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
         return 0
 
     if args.check:
-        failures = 0
-        for passed, message in generator.check():
-            print(f"  {'OK  ' if passed else 'FAIL'}  {message}")
-            failures += not passed
-        print(f"\n{'ALL CONSISTENT' if not failures else f'{failures} PROBLEM(S)'}")
+        report = generator.check()
+        # Under --silent only the failures are printed, and a clean run says nothing
+        # at all: the flag promises all output except errors suppressed. The exit
+        # status carries the verdict either way.
+        for passed, message in report:
+            if not (passed and args.silent):
+                print(f"  {'OK  ' if passed else 'FAIL'}  {message}")
+        failures = sum(1 for passed, _ in report if not passed)
+        if failures or not args.silent:
+            print(f"\n{'ALL CONSISTENT' if not failures else f'{failures} PROBLEM(S)'}")
         return 1 if failures else 0
 
     if not args.renderer:

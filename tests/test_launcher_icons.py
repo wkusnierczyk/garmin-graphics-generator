@@ -308,6 +308,35 @@ def test_check_works_without_the_sdk(tmp_path):
     assert not any("launcherIcon" in message for _, message in report)
 
 
+def test_table_falls_back_to_the_sdk_before_anything_is_generated(tmp_path):
+    project, devices = make_project(tmp_path)
+    rendered = (
+        LauncherIconGenerator()
+        .set_project_directory(str(project))
+        .set_devices_directory(str(devices))
+        .table()
+    )
+    assert "| tiny" in rendered
+    assert len(rendered.splitlines()) == 2 + len(SIZES)
+
+
+def test_table_reports_a_project_with_no_products(tmp_path):
+    project, devices = make_project(tmp_path)
+    (project / "manifest.xml").write_text("<iq:manifest/>")
+    with pytest.raises(LauncherIconError, match="no products"):
+        generator(project, devices).table()
+
+
+def test_resample_renderer_does_not_hold_the_master_open(tmp_path):
+    master = tmp_path / "master.png"
+    Image.new("RGB", (100, 100), "green").save(master)
+    renderer = resample_renderer(str(master))
+    # Removing the master must not disturb a renderer already built from it, and on
+    # Windows would fail outright if the handle were still open.
+    os.remove(master)
+    assert renderer(38).size == (38, 38)
+
+
 def test_table_from_the_committed_mapping(tmp_path):
     project, devices = make_project(tmp_path)
     generator(project, devices).generate_icons().write_mapping()

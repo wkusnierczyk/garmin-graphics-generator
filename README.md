@@ -3,7 +3,7 @@
 A CLI tool and library for Garmin watch face imagery.   
 It:
 * removes white backgrounds from screenshots;
-* generates a composite "hero" pixel image with watch faces scatterred randomly;
+* generates a composite "hero" pixel image with watch faces scattered randomly;
 * creates copies of input files resized to a common width;
 * generates a launcher icon for every size the supported devices ask for, and the jungle
   mapping that serves them.
@@ -77,6 +77,10 @@ garmin-graphics-generator icons -p ../my-watch-face --check
 # print the product to icon size table for the project README
 garmin-graphics-generator icons -p ../my-watch-face --table
 ```
+
+`--check` and `--table` read the committed mapping, so they need no SDK; `--table` falls back to the
+SDK when nothing has been generated yet, which is when the project README is usually being written.
+Under `-q` a passing `--check` prints nothing and says so through its exit status alone.
 
 ### The renderer
 

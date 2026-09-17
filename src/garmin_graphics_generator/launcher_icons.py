@@ -67,7 +67,11 @@ def resample_renderer(master_path: str) -> Renderer:
     Right for artwork made of a few bold shapes. For fine strokes at a high spatial
     frequency, supply a renderer that draws at the target size instead.
     """
-    master = Image.open(master_path)
+    # Copied out of the context manager rather than kept open: Image.open is lazy,
+    # and the renderer outlives this call, so the handle would stay open for as long
+    # as the generator runs -- and on Windows that locks the master file.
+    with Image.open(master_path) as opened:
+        master = opened.copy()
     if master.width != master.height:
         logger.warning(
             "master %s is %dx%d, not square; icons will be distorted",
@@ -317,8 +321,21 @@ class LauncherIconGenerator:
     # -------------------------------------------------------------------- output
 
     def table(self) -> str:
-        """The product to icon size table, as markdown, for a project README."""
-        return table(self.mapping() or self._sizes)
+        """
+        The product to icon size table, as markdown, for a project README.
+
+        Reads the committed mapping, and falls back to the SDK when there is none --
+        the table is most wanted when writing the README for the first time, which is
+        before anything has been generated.
+        """
+        sizes = self.mapping() or self._sizes
+        if not sizes:
+            sizes = self.resolve_sizes().sizes
+        if not sizes:
+            raise LauncherIconError(
+                f"no products to tabulate: {self._path(MANIFEST_NAME)} declares none"
+            )
+        return table(sizes)
 
     def check(self) -> List[Tuple[bool, str]]:
         """
