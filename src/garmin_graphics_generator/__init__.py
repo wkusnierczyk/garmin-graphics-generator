@@ -1,7 +1,8 @@
 """
 Garmin Graphics Generator
 -------------------------
-A library and CLI tool for generating hero images from watch face screenshots.
+A library and CLI tool for watch face imagery: hero images from screenshots, and
+per-device launcher icons.
 """
 import os
 
@@ -11,6 +12,21 @@ os.environ["KMP_WARNINGS"] = "0"
 os.environ["OMP_DISPLAY_ENV"] = "FALSE"
 
 # pylint: disable=wrong-import-position
-from .core import WatchHeroGenerator
+from .launcher_icons import LauncherIconGenerator
 
-__all__ = ["WatchHeroGenerator"]
+__all__ = ["LauncherIconGenerator", "WatchHeroGenerator"]
+
+
+def __getattr__(name):
+    """
+    Imports WatchHeroGenerator on first use.
+
+    The hero pipeline pulls in rembg and onnxruntime, which are heavy and entirely
+    unrelated to launcher icons. Importing them lazily keeps `icons` -- the command
+    a watch face project reruns on every device list change -- to Pillow alone.
+    """
+    if name == "WatchHeroGenerator":
+        from .core import WatchHeroGenerator  # pylint: disable=import-outside-toplevel
+
+        return WatchHeroGenerator
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
