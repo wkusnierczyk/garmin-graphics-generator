@@ -45,6 +45,12 @@ The recommended workflow is as follows:
 * Use the generated hero image when uploading your watch face to the Garmin Connect IQ Developer portal.
 * Use the resized images in your `README.md` file to detail the different variants.
 
+But can't you do all this using an AI, like Gemini with Nano Banana?
+Yes, you can, and in most contexts that solution might be better and preferred.
+Sometimes, however, forcing an AI agent to fulfil your expectations proves difficult; for example, when you have several watch faces that look much alike, it may consistently fail to include all of them in the generated image, instead replicating only one of them.
+Another limitation is that of being able to upload only a limited number of input images (through the chat-based web interface, at least).
+The Garmin Graphics Generator does not aim at replacing any other solution you may find more useful, but rather complementing them in a niche selection of tasks.
+
 ## Launcher icons
 
 Garmin sets the launcher icon size **per device**, not per resolution: it is `launcherIcon` in the
