@@ -24,7 +24,8 @@ Implementation language: Python.
   writes both the device screen at native resolution and the frame set into the SDK's own watch
   render, background already transparent. No GUI, and no screen-recording permission.
 * **Background removal**  
-  Automatically strips white backgrounds from input images.
+  Automatically strips white backgrounds from input images. An input that is already cut out -- every
+  `watch-*.png` from `shots` -- is taken as it is, so that path never loads `rembg` at all.
 * **Hero image generation**  
   Creates a standard 1440x720 (configurable) composite image with randomized placement, rotation, and sizing.
   The default image size is expected for uploading to the Garmin Connect IQ Developer portal.

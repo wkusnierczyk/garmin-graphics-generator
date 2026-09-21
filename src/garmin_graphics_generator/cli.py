@@ -306,8 +306,8 @@ def run_hero(args, parser: argparse.ArgumentParser) -> int:
             "-o/--output-directory, input_files (unless using --about)"
         )
 
-    # Imported here rather than at module level: the hero pipeline pulls in rembg and
-    # onnxruntime, which the icons command has no use for.
+    # Imported here rather than at module level: the hero pipeline can pull in rembg
+    # and onnxruntime, which the icons command has no use for.
     from . import WatchHeroGenerator  # pylint: disable=import-outside-toplevel
 
     generator = WatchHeroGenerator()
