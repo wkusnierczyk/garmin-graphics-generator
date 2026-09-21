@@ -2,6 +2,7 @@
 
 A CLI tool and library for Garmin watch face imagery.   
 It:
+* captures watch face screenshots from the Connect IQ simulator, headlessly;
 * removes white backgrounds from screenshots;
 * generates a composite "hero" pixel image with watch faces scattered randomly;
 * creates copies of input files resized to a common width;
@@ -18,6 +19,10 @@ Implementation language: Python.
 
 ## Features
 
+* **Headless screenshot capture**  
+  Runs the Connect IQ simulator in a container under `Xvfb`, pushes the project's build into it, and
+  writes both the device screen at native resolution and the frame set into the SDK's own watch
+  render, background already transparent. No GUI, and no screen-recording permission.
 * **Background removal**  
   Automatically strips white backgrounds from input images.
 * **Hero image generation**  
@@ -40,16 +45,93 @@ Implementation language: Python.
 
 The recommended workflow is as follows:
 
-* Build your watch face, start the simulator, capture screenshots of all relevant variants of your watch face.
-* Run `garmin-graphics-generator` to process the screenshots.
+* Run `garmin-graphics-generator shots` to build your watch face and capture it from the simulator.
+* Run `garmin-graphics-generator hero` to process the captures.
 * Use the generated hero image when uploading your watch face to the Garmin Connect IQ Developer portal.
 * Use the resized images in your `README.md` file to detail the different variants.
+
+```bash
+garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm -n 4 -o shots/
+garmin-graphics-generator hero -o graphics/ shots/watch-*.png
+```
+
+Capturing used to be the manual step: start the simulator, wait for a frame worth keeping, *File ->
+Save Screenshot*, repeat, then composite each capture onto a watch render by hand. That is the step
+that made the output drift, because a screenshot is derived from the app but is not generated output,
+so nothing reports it stale. Both halves are now a command.
 
 But can't you do all this using an AI, like Gemini with Nano Banana?
 Yes, you can, and in most contexts that solution might be better and preferred.
 Sometimes, however, forcing an AI agent to fulfil your expectations proves difficult; for example, when you have several watch faces that look much alike, it may consistently fail to include all of them in the generated image, instead replicating only one of them.
 Another limitation is that of being able to upload only a limited number of input images (through the chat-based web interface, at least).
 The Garmin Graphics Generator does not aim at replacing any other solution you may find more useful, but rather complementing them in a niche selection of tasks.
+
+## Screenshots
+
+`shots` runs the simulator where it can be driven: inside a container, under a virtual display.
+
+```bash
+# four frames, three seconds apart, of one product
+garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm -n 4 -o shots/
+
+# on an arm64 machine, where the tester image runs emulated
+garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm --platform linux/amd64 -o shots/
+
+# a fixed clock, so the captured face reads the same every time
+garmin-graphics-generator shots -p ../my-watch-face -d venu3 --timezone Asia/Tokyo -o shots/
+```
+
+Two files come out per frame:
+
+| file | what it is | use |
+|:--|:--|:--|
+| `screen-<i>.png` | the device framebuffer at native resolution, nothing composited over it | a raw capture |
+| `watch-<i>.png` | the frame set into the SDK's watch render, surround already transparent | input to `hero` |
+
+`watch-*.png` needs no background removal, so `hero` takes it as it is.
+
+### Why a container
+
+`monkeydo` only pushes a `.prg` into a simulator that is already running, and the simulator is a GUI
+application. The alternatives on macOS both need a permission granted by hand, per terminal
+application: window capture needs Screen Recording -- and without it returns the desktop wallpaper
+rather than failing -- and driving *File -> Save Screenshot* with AppleScript needs Accessibility.
+Neither runs in CI.
+
+The container needs nothing installed into it. `Xvfb`, `openssl`, `bash` and the SDK are all already
+in `ghcr.io/matco/connectiq-tester`, which also carries the per-product device definitions that the
+SDK's own archive does not. `Xvfb -fbdir` maps the framebuffer onto a file in X Window Dump format,
+so reading a frame is a file copy: no `xwd`, `scrot` or ImageMagick either.
+
+### How a frame is cut
+
+Everything needed is published by the SDK, so this is a crop at known coordinates rather than an
+estimate:
+
+* `Devices/<product>/simulator.json` gives `display.location`, the screen rectangle within the device
+  render -- `{x: 122, y: 238, 416x416}` for `epix2pro47mm`;
+* `Devices/<product>/<product>.png` **is** the watch render the simulator draws, and its alpha channel
+  is `0` exactly over the screen aperture. Masking the crop with it reproduces the device screen
+  including the corners a round display never lights;
+* the watch silhouette comes from a flood fill of that render's flat white surround, computed on the
+  artwork alone before any frame is composited -- so a bright pixel in the watch face cannot be
+  mistaken for background. A global white threshold punches holes in exactly the content worth
+  showing: the lead glyph of a digital-rain column is very nearly white;
+* the render is located in the framebuffer by matching its own pixels, on a row the watch face cannot
+  write to, rather than by assuming where the simulator puts its window. A simulator that changes its
+  menu bar or its status bar then shifts nothing.
+
+The device definition is copied out of the container along with the frames, so the artwork a frame is
+cut against is always the artwork that rendered it -- and a machine with no Connect IQ SDK installed
+can still run this.
+
+### Timing
+
+Frames are taken once the face is actually on screen, which is waited for rather than assumed: the
+simulator comes up showing no device at all, and `monkeydo` takes under a second to push a build
+natively against the better part of a minute under emulation. `--settle` then lets the face run
+before the first frame is kept, so a capture is not of an animation's opening state, and `--interval`
+spaces the rest so each frame differs.
 
 ## Launcher icons
 
@@ -153,8 +235,8 @@ garmin-graphics-generator hero \
    my_watch_1.jpg my_watch_2.jpg
 ```
 
-The CLI has two commands, `hero` and `icons`. An invocation naming neither is treated as `hero`, so
-the flat form the tool had before `icons` existed keeps working.
+The CLI has three commands, `shots`, `hero` and `icons`. An invocation naming none of them is treated
+as `hero`, so the flat form the tool had before `icons` existed keeps working.
 
 For details about the available command line options, see `garmin-graphics-generator --help`, and
 `garmin-graphics-generator <command> --help`:

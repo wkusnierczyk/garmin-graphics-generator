@@ -1,8 +1,8 @@
 """
 Garmin Graphics Generator
 -------------------------
-A library and CLI tool for watch face imagery: hero images from screenshots, and
-per-device launcher icons.
+A library and CLI tool for watch face imagery: screenshots captured from the
+Connect IQ simulator, hero images made from them, and per-device launcher icons.
 """
 import os
 
