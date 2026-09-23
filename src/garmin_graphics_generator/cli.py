@@ -365,9 +365,10 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
 
 def run_shots(args, parser: argparse.ArgumentParser) -> int:
     """Captures frames from the simulator running headlessly in a container."""
-    if args.count < 1:
-        parser.error("-n/--count must be at least one")
 
+    # The counts and timings are checked by run_simulator, before it starts
+    # anything, and reach the caller here as a ShotsError like any other. One home
+    # for the rules, rather than a copy that has to be kept in step.
     def capture(work_directory: str) -> int:
         shots = take_shots(
             project=args.project_directory,

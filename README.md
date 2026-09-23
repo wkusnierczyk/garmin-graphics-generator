@@ -246,18 +246,64 @@ For details about the available command line options, see `garmin-graphics-gener
 garmin-graphics-generator --help
 
 # Output
-usage: garmin-graphics-generator [-h] [--about] {hero,icons} ...
+usage: garmin-graphics-generator [-h] [--about] {hero,icons,shots} ...
 
-Generate watch face hero images and per-device launcher icons.
+Capture watch face screenshots, and generate hero images and per-device launcher icons.
 
 positional arguments:
-  {hero,icons}
-    hero        Generate a hero image from watch face screenshots
-    icons       Generate per-device launcher icons and their jungle mapping
+  {hero,icons,shots}
+    hero              Generate a hero image from watch face screenshots
+    icons             Generate per-device launcher icons and their jungle mapping
+    shots             Capture watch face screenshots from the simulator, headlessly
 
 options:
-  -h, --help    show this help message and exit
-  --about       Print tool information and exit
+  -h, --help          show this help message and exit
+  --about             Print tool information and exit
+```
+
+```bash
+garmin-graphics-generator shots --help
+
+# Output
+usage: garmin-graphics-generator shots [-h] [-p PROJECT_DIRECTORY] -d DEVICE [-o OUTPUT_DIRECTORY]
+                                       [-n COUNT] [-i INTERVAL] [--settle SETTLE]
+                                       [--prefix PREFIX] [--jungle JUNGLE] [--prg PRG]
+                                       [--image IMAGE] [--platform PLATFORM] [--screen SCREEN]
+                                       [--timezone TIMEZONE] [--timeout TIMEOUT]
+                                       [--ready-timeout READY_TIMEOUT]
+                                       [--work-directory WORK_DIRECTORY] [-v | -q]
+
+options:
+  -h, --help            show this help message and exit
+  -p, --project-directory PROJECT_DIRECTORY
+                        Watch face project directory, the one holding monkey.jungle
+  -d, --device DEVICE   Product to capture, as named in manifest.xml (e.g. epix2pro47mm)
+  -o, --output-directory OUTPUT_DIRECTORY
+                        Where to write the screen and watch images
+  -n, --count COUNT     How many frames to capture (default: 4)
+  -i, --interval INTERVAL
+                        Seconds between frames; what makes an animated face look different in each
+                        (default: 3.0)
+  --settle SETTLE       Seconds to let the face run before the first frame, so a capture is not of
+                        its opening state (default: 6.0)
+  --prefix PREFIX       Prepended to every output filename
+  --jungle JUNGLE       Jungle file to build, relative to the project directory
+  --prg PRG             Path inside the container to a prebuilt .prg, skipping the build
+  --image IMAGE         Container image carrying the SDK and the device definitions
+  --platform PLATFORM   Container platform, e.g. linux/amd64 on an arm64 machine
+  --screen SCREEN       Virtual display size; must be larger than the device render (default:
+                        1280x1024)
+  --timezone TIMEZONE   TZ for the container, which is the time the captured face shows
+  --timeout TIMEOUT     Seconds to allow the build and simulator start, which is where an emulated
+                        run spends its time (default: 1800)
+  --ready-timeout READY_TIMEOUT
+                        Seconds to wait for the pushed face to appear on the simulator's screen
+                        (default: 300)
+  --work-directory WORK_DIRECTORY
+                        Where to keep the raw framebuffers and the device definition copied out of
+                        the container; a temporary directory by default
+  -v, --verbose         Enable verbose output
+  -q, --silent          Suppress all output except errors
 ```
 
 ```bash
@@ -346,8 +392,8 @@ pip install .
 ```bash
 garmin-graphics-generator --about
 
-garmin-graphics-generator: A CLI tool to generate watch face hero images and launcher icons
-├─ version:   0.3.0
+garmin-graphics-generator: A CLI tool for watch face imagery: simulator screenshots, hero images and launcher icons
+├─ version:   0.4.0
 ├─ developer: mailto:waclaw.kusnierczyk@gmail.com
 ├─ source:    https://github.com/wkusnierczyk/garmin_graphics_generator
 └─ licence:   MIT https://opensource.org/licenses/MIT

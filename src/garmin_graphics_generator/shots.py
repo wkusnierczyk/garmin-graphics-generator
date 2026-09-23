@@ -31,6 +31,7 @@ developer's machine and in CI, and needs no screen-recording permission on eithe
 """
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -71,6 +72,8 @@ SCREEN_PREFIX = "screen"
 WATCH_PREFIX = "watch"
 FRAME_PREFIX = "frame"
 DEVICE_SUBDIRECTORY = "device"
+STATUS_NAME = "status"
+PROBE_NAME = "probe.xwd"
 
 
 class ShotsError(Exception):
@@ -158,6 +161,46 @@ tail -f /dev/null
 _GRAB_COMMAND = "cp /tmp/fb/Xvfb_screen0 "
 
 
+def _check_timings(
+    count: int, interval: float, settle: float, timeout: int, ready_timeout: int
+) -> None:
+    """
+    Rejects timings that cannot work, before anything is started.
+
+    Checked here rather than where they are used: a negative interval only reaches
+    `time.sleep` once the image has been pulled, the face compiled and the
+    simulator launched, which is a long way to go to be told the arguments were
+    wrong.
+    """
+    if count < 1:
+        raise ShotsError(f"count must be at least 1, not {count}")
+    for name, value in (("interval", interval), ("settle", settle)):
+        if value < 0:
+            raise ShotsError(f"{name} cannot be negative, and {value} is")
+    for name, value in (("timeout", timeout), ("ready_timeout", ready_timeout)):
+        if value <= 0:
+            raise ShotsError(f"{name} must be positive, not {value}")
+
+
+def _clear_previous_run(work_directory: str) -> None:
+    """
+    Removes what an earlier run left in an explicitly named work directory.
+
+    The default work directory is a fresh temporary one, but `--work-directory`
+    keeps its contents between runs, and every one of them would be read as this
+    run's: a stale `status` says the simulator is ready before it has started, and
+    a stale device definition is artwork that rendered some other capture.
+    """
+    for name in os.listdir(work_directory):
+        path = os.path.join(work_directory, name)
+        if name in (STATUS_NAME, PROBE_NAME) or (
+            name.startswith(FRAME_PREFIX + "-") and name.endswith(".xwd")
+        ):
+            os.remove(path)
+        elif name == DEVICE_SUBDIRECTORY and os.path.isdir(path):
+            shutil.rmtree(path)
+
+
 def docker_available() -> bool:
     """Reports whether a Docker daemon is reachable."""
     if shutil.which("docker") is None:
@@ -199,6 +242,11 @@ def run_simulator(
     between a native run and an emulated one. A fixed delay is either a capture of
     an empty window or a long wait for nothing.
     """
+    # Arguments first, environment second: a mistyped count is the caller's to fix
+    # whether or not Docker happens to be running, and reporting it as a Docker
+    # problem sends them after the wrong thing.
+    _check_timings(count, interval, settle, timeout, ready_timeout)
+
     if not docker_available():
         raise ShotsError(
             "Docker is not available. The capture runs the Connect IQ simulator in "
@@ -209,11 +257,14 @@ def run_simulator(
     project = os.path.abspath(os.path.expanduser(project))
     if not os.path.isdir(project):
         raise ShotsError(f"no such project directory: {project}")
-    if not os.path.isfile(os.path.join(project, jungle)):
+    # Only when something is going to be built: a prebuilt .prg is compiled
+    # already, and a directory holding one need not be a project at all.
+    if prg is None and not os.path.isfile(os.path.join(project, jungle)):
         raise ShotsError(f"{project} has no {jungle}; is it a Connect IQ project?")
 
     work_directory = os.path.abspath(os.path.expanduser(work_directory))
     os.makedirs(work_directory, exist_ok=True)
+    _clear_previous_run(work_directory)
 
     environment = {
         "SDK_BIN": "/connectiq/bin",
@@ -301,7 +352,7 @@ def _await_ready(
     timescales: a build that takes minutes under emulation is normal, and a push
     that takes minutes is not.
     """
-    status_path = os.path.join(work_directory, "status")
+    status_path = os.path.join(work_directory, STATUS_NAME)
     deadline = time.monotonic() + build_timeout
     while not os.path.exists(status_path):
         if time.monotonic() > deadline:
@@ -323,7 +374,7 @@ def _await_ready(
             )
 
     device = DeviceRender(product, os.path.join(work_directory, DEVICE_SUBDIRECTORY))
-    probe_path = os.path.join(work_directory, "probe.xwd")
+    probe_path = os.path.join(work_directory, PROBE_NAME)
     deadline = time.monotonic() + ready_timeout
     while True:
         frame = _grab(container, work_directory, probe_path)
@@ -398,11 +449,15 @@ def cut_frames(
     Cuts framebuffer dumps into device screenshots and watch renders.
 
     The device render is located in the first frame and the offset reused for the
-    rest: the simulator does not move its window mid-capture, and locating once
-    turns a search into a crop for every frame after the first.
+    rest, which turns a search into a crop for every frame after the first. Reused
+    is not assumed, though: `extract` checks the offset against each frame and says
+    so if the window has moved, and then it is simply found again. Cropping alone
+    would accept any offset that lands inside the image and quietly return a watch
+    shifted by however far the window went.
     """
     device = DeviceRender(product, devices_directory)
     os.makedirs(output_directory, exist_ok=True)
+    _clear_previous_output(output_directory, prefix)
 
     shots: List[Shot] = []
     origin = None
@@ -415,8 +470,7 @@ def cut_frames(
         try:
             screen, watch = device.extract(frame, origin)
         except CaptureError:
-            # A window that did move invalidates the reused offset rather than the
-            # capture: look again for this frame and carry on with the new one.
+            logger.debug("the render moved; locating again in %s", frame_path)
             origin = device.locate(frame)
             screen, watch = device.extract(frame, origin)
 
@@ -432,6 +486,24 @@ def cut_frames(
         shots.append(Shot(index, screen_path, watch_path))
 
     return shots
+
+
+def _clear_previous_output(output_directory: str, prefix: str) -> None:
+    """
+    Removes the images an earlier capture wrote under these names.
+
+    Without this a rerun at a smaller count leaves the extra frames of the larger
+    one behind, and the documented `hero ... shots/watch-*.png` glob picks them up:
+    a composition of this capture and the last one, with nothing to show that is
+    what it is. Only the names this function itself produces are removed, so
+    anything else in the directory is left alone.
+    """
+    pattern = re.compile(
+        rf"^{re.escape(prefix)}({SCREEN_PREFIX}|{WATCH_PREFIX})-\d+\.png$"
+    )
+    for name in os.listdir(output_directory):
+        if pattern.match(name):
+            os.remove(os.path.join(output_directory, name))
 
 
 def take_shots(

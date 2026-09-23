@@ -162,8 +162,8 @@ class DeviceRender:
         if not os.path.isdir(directory):
             raise CaptureError(
                 f"no SDK definition for {product} in {devices_directory}; "
-                "check the product name against manifest.xml, or pass "
-                "--devices-directory"
+                "check the product name against the one in manifest.xml, and that "
+                "the SDK or container image being used carries a definition for it"
             )
 
         definition_path = os.path.join(directory, SIMULATOR_DEFINITION)
@@ -194,6 +194,7 @@ class DeviceRender:
         except (IOError, OSError) as error:
             raise CaptureError(f"cannot read {render_path}: {error}") from error
 
+        self._render_rgb = self.render.convert("RGB")
         self.silhouette = _watch_silhouette(self.render)
         logger.debug(
             "%s: render %dx%d, screen %s",
@@ -227,7 +228,7 @@ class DeviceRender:
         what makes the match independent of how much gets clipped.
         """
         probe_y = self._probe_row()
-        render_rgb = self.render.convert("RGB")
+        render_rgb = self._render_rgb
         inset = self._inset(render_rgb)
         strip = render_rgb.crop(
             (inset, probe_y, render_rgb.width - inset, probe_y + 1)
@@ -262,7 +263,7 @@ class DeviceRender:
         likely to occur twice in a framebuffer. Sampled every few rows so the scan
         stays cheap on a render several hundred pixels tall.
         """
-        render_rgb = self.render.convert("RGB")
+        render_rgb = self._render_rgb
         inset = self._inset(render_rgb)
         _, screen_y, _, screen_height = self.screen
         below = screen_y + screen_height
@@ -365,9 +366,19 @@ class DeviceRender:
         Returns ``(screen, watch)``: the screen at the device's native resolution
         with the render's rim masked back to black, and the frame set into the
         watch with everything outside the watch transparent.
+
+        A supplied ``origin`` is checked against this frame before it is cropped
+        at. Cropping is happy to take any offset that lands inside the image, so an
+        origin carried over from an earlier frame would otherwise yield a plausible
+        but wrong picture -- a watch shifted by however far the window moved --
+        rather than an error.
         """
         if origin is None:
             origin = self.locate(frame)
+        elif not self._verify(frame, self._render_rgb, origin):
+            raise CaptureError(
+                f"the {self.product} render is not at {origin} in this frame"
+            )
         left, top = origin
         screen_x, screen_y, width, height = self.screen
 
