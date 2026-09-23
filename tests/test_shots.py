@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import pytest
 from PIL import Image
@@ -96,12 +97,91 @@ class TestCutFrames:
             paths.append(str(path))
 
         cut = cut_frames(paths, "testwatch", str(devices), str(tmp_path / "out"))
-        second = Image.open(cut[1].screen_path)
-        assert second.getpixel((SCREEN["width"] // 2, SCREEN["height"] // 2)) == (
-            0,
-            90,
-            0,
+
+        # Compared against the crop taken at the offset this frame actually has,
+        # pixel for pixel. Sampling the middle instead passes either way: a crop at
+        # the stale offset is still mostly screen, so its centre is still the fill
+        # colour while the picture around it is shifted by however far the window
+        # went. That is what this test used to do, and it proved nothing.
+        expected, _ = device.extract(moved)
+        assert Image.open(cut[1].screen_path).tobytes() == expected.tobytes()
+
+
+class TestStaleState:
+    def test_output_from_a_longer_run_is_not_left_behind(self, tmp_path):
+        """Otherwise the documented watch-*.png glob picks up the previous capture."""
+        devices = make_device(tmp_path)
+        output = tmp_path / "out"
+
+        cut_frames(
+            make_frames(tmp_path, devices, count=3),
+            "testwatch",
+            str(devices),
+            str(output),
         )
+        assert (output / "watch-3.png").exists()
+
+        shutil.rmtree(tmp_path / "frames")
+        cut_frames(
+            make_frames(tmp_path, devices, count=1),
+            "testwatch",
+            str(devices),
+            str(output),
+        )
+
+        assert (output / "watch-1.png").exists()
+        assert not (output / "watch-2.png").exists()
+        assert not (output / "watch-3.png").exists()
+
+    def test_other_files_in_the_output_directory_are_left_alone(self, tmp_path):
+        devices = make_device(tmp_path)
+        output = tmp_path / "out"
+        output.mkdir()
+        keep = output / "MatrixTimeHero.png"
+        keep.write_bytes(b"not mine to remove")
+        (output / "watch-9.png").write_bytes(b"mine")
+
+        cut_frames(
+            make_frames(tmp_path, devices, count=1),
+            "testwatch",
+            str(devices),
+            str(output),
+        )
+
+        assert keep.read_bytes() == b"not mine to remove"
+        assert not (output / "watch-9.png").exists()
+
+    def test_a_prefixed_run_does_not_clear_another_prefix(self, tmp_path):
+        devices = make_device(tmp_path)
+        output = tmp_path / "out"
+        frames = make_frames(tmp_path, devices, count=1)
+
+        cut_frames(frames, "testwatch", str(devices), str(output), prefix="a-")
+        cut_frames(frames, "testwatch", str(devices), str(output), prefix="b-")
+
+        assert (output / "a-watch-1.png").exists()
+        assert (output / "b-watch-1.png").exists()
+
+    def test_a_stale_status_does_not_stand_in_for_this_run(self, tmp_path, monkeypatch):
+        """A reused --work-directory would report ready before anything started."""
+        monkeypatch.setattr(shots, "docker_available", lambda: True)
+        project = make_project(tmp_path)
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / shots.STATUS_NAME).write_text("ready\n")
+        (work / "frame-7.xwd").write_bytes(b"stale")
+        (work / shots.DEVICE_SUBDIRECTORY).mkdir()
+
+        def stop(*_args, **_kwargs):
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr(shots.subprocess, "run", stop)
+        with pytest.raises(RuntimeError):
+            run_simulator(str(project), "testwatch", str(work))
+
+        assert not (work / shots.STATUS_NAME).exists()
+        assert not (work / "frame-7.xwd").exists()
+        assert not (work / shots.DEVICE_SUBDIRECTORY).exists()
 
 
 class TestRunSimulatorArguments:
@@ -121,6 +201,49 @@ class TestRunSimulatorArguments:
         project.mkdir()
         with pytest.raises(ShotsError, match="has no monkey.jungle"):
             run_simulator(str(project), "testwatch", str(tmp_path / "work"))
+
+    @pytest.mark.parametrize(
+        "settings, message",
+        [
+            ({"count": 0}, "count must be at least 1"),
+            ({"interval": -1}, "interval cannot be negative"),
+            ({"settle": -0.5}, "settle cannot be negative"),
+            ({"timeout": 0}, "timeout must be positive"),
+            ({"ready_timeout": -5}, "ready_timeout must be positive"),
+        ],
+    )
+    def test_timings_are_rejected_before_anything_starts(
+        self, tmp_path, monkeypatch, settings, message
+    ):
+        """A negative interval only reaches time.sleep after a build and a launch."""
+        started = []
+        monkeypatch.setattr(shots, "docker_available", lambda: started.append("docker"))
+        monkeypatch.setattr(
+            shots.subprocess, "run", lambda *a, **k: started.append("run")
+        )
+        project = make_project(tmp_path)
+
+        with pytest.raises(ShotsError, match=message):
+            run_simulator(str(project), "testwatch", str(tmp_path / "work"), **settings)
+        assert started == []
+
+    def test_a_prebuilt_prg_needs_no_jungle(self, tmp_path, monkeypatch):
+        """Nothing is compiled, so the directory need not be a project at all."""
+        monkeypatch.setattr(shots, "docker_available", lambda: True)
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        recorded = {}
+
+        def fake_run(command, **_):
+            recorded["command"] = command
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr(shots.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError):
+            run_simulator(
+                str(bare), "testwatch", str(tmp_path / "work"), prg="/tmp/built.prg"
+            )
+        assert "PRG=/tmp/built.prg" in recorded["command"]
 
     def test_an_alternative_jungle_is_honoured(self, tmp_path, monkeypatch):
         """A repo carrying a second edition names its own jungle."""
