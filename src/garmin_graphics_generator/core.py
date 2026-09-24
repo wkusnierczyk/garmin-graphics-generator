@@ -60,6 +60,35 @@ def has_transparency(image: Image.Image) -> bool:
     return alpha.getextrema()[0] < 255
 
 
+def remove(data: bytes) -> bytes:
+    """
+    Cuts an image out of its background, deferring the import until it is needed.
+
+    rembg pulls in onnxruntime, which is heavy and which an already-transparent
+    input -- everything `shots` produces -- never touches. Keeping the call behind
+    a module-level function of our own also leaves one seam to stub in tests,
+    rather than a name bound at import time.
+    """
+    from rembg import remove as rembg_remove  # pylint: disable=import-outside-toplevel
+
+    return rembg_remove(data)
+
+
+def has_transparency(image: Image.Image) -> bool:
+    """
+    Reports whether an image is already cut out of its background.
+
+    An alpha channel alone does not say so -- a screenshot saved as RGBA is fully
+    opaque -- so this asks whether anything in it is actually transparent.
+    """
+    if image.mode == "P" and "transparency" in image.info:
+        return True
+    if image.mode not in ("RGBA", "LA"):
+        return False
+    alpha = image.getchannel("A")
+    return alpha.getextrema()[0] < 255
+
+
 class WatchHeroGenerator:
     """
     A fluent API class to process watch images, remove backgrounds,
