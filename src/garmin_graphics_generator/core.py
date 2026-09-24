@@ -231,33 +231,7 @@ class WatchHeroGenerator:
 
         logger.info("Generating hero composition (%dx%d)...", *self._hero_size)
 
-        base_scale = self._calculate_auto_scale_factor(len(self._processed_images))
-
-        layout = None
-        scale = base_scale
-        for attempt in range(1, LAYOUT_ATTEMPTS + 1):
-            layout = self._attempt_layout(scale)
-            if layout is not None:
-                if attempt > 1:
-                    logger.debug(
-                        "Laid out on attempt %d, at scale %.0f", attempt, scale
-                    )
-                break
-            scale *= LAYOUT_SHRINK
-
-        if layout is None:
-            # Every attempt fell short. Keep the best of them rather than nothing,
-            # and say so once -- which is now a statement about the request, not
-            # about a run of bad luck.
-            layout = self._attempt_layout(scale, partial=True)
-            logger.warning(
-                "Could only place %d of %d images in %dx%d after %d attempts. "
-                "Try a larger --hero-file-size, a higher --overlap, or fewer images.",
-                len(layout),
-                len(self._processed_images),
-                *self._hero_size,
-                LAYOUT_ATTEMPTS,
-            )
+        layout = self.lay_out()
 
         hero_image = Image.new(MODE_RGBA, self._hero_size, (255, 255, 255, 0))
         for image, position in layout:
@@ -268,6 +242,45 @@ class WatchHeroGenerator:
         logger.info("Saved hero image: %s", output_path)
 
         return self
+
+    def lay_out(self) -> List[Tuple[Image.Image, Tuple[int, int]]]:
+        """
+        Arranges every image, retrying whole layouts until they all fit.
+
+        Separate from writing the file so that what is arranged can be examined
+        without a hero image being saved to look at -- and so this loop exists
+        once. A test that reproduced it would be testing its own copy.
+
+        The scale shrinks *between* attempts, never after the last one, so the
+        salvage layout below is made at a size that was actually tried and the
+        count in the warning is the number of attempts that happened.
+        """
+        scale = self._calculate_auto_scale_factor(len(self._processed_images))
+
+        for attempt in range(LAYOUT_ATTEMPTS):
+            if attempt:
+                scale *= LAYOUT_SHRINK
+            layout = self._attempt_layout(scale)
+            if layout is not None:
+                if attempt:
+                    logger.debug(
+                        "Laid out on attempt %d, at scale %.0f", attempt + 1, scale
+                    )
+                return layout
+
+        # Every attempt came up short, so take one more at the smallest size tried
+        # and keep whatever fits rather than nothing. Said once, and now a
+        # statement about the request rather than about a run of bad luck.
+        layout = self._attempt_layout(scale, partial=True)
+        logger.warning(
+            "Could only place %d of %d images in %dx%d after %d attempts. "
+            "Try a larger --hero-file-size, a higher --overlap, or fewer images.",
+            len(layout),
+            len(self._processed_images),
+            *self._hero_size,
+            LAYOUT_ATTEMPTS,
+        )
+        return layout
 
     def _attempt_layout(
         self, scale: float, partial: bool = False
