@@ -4,12 +4,25 @@ CLI entry point for the Garmin Graphics Generator.
 import argparse
 import logging
 import sys
+import tempfile
 from importlib.metadata import PackageNotFoundError, version
 
+from .capture import CaptureError
 from .constants import DEFAULT_DEVICES_DIRECTORY
 from .launcher_icons import LauncherIconError, LauncherIconGenerator, load_renderer
+from .shots import (
+    DEFAULT_COUNT,
+    DEFAULT_IMAGE,
+    DEFAULT_INTERVAL,
+    DEFAULT_READY_TIMEOUT,
+    DEFAULT_SCREEN,
+    DEFAULT_SETTLE,
+    DEFAULT_TIMEOUT,
+    ShotsError,
+    take_shots,
+)
 
-COMMANDS = ("hero", "icons")
+COMMANDS = ("hero", "icons", "shots")
 
 # Flags the top-level parser handles itself, so they are not mistaken for the start
 # of a legacy flat invocation.
@@ -156,6 +169,116 @@ def add_icons_arguments(parser: argparse.ArgumentParser):
     add_verbosity(parser)
 
 
+def add_shots_arguments(parser: argparse.ArgumentParser):
+    """Adds the headless capture command's arguments to a parser."""
+    parser.add_argument(
+        "-p",
+        "--project-directory",
+        default=".",
+        help="Watch face project directory, the one holding monkey.jungle",
+    )
+    parser.add_argument(
+        "-d",
+        "--device",
+        required=True,
+        help="Product to capture, as named in manifest.xml (e.g. epix2pro47mm)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-directory",
+        default=".",
+        help="Where to write the screen and watch images",
+    )
+    parser.add_argument(
+        "-n",
+        "--count",
+        type=int,
+        default=DEFAULT_COUNT,
+        help=f"How many frames to capture (default: {DEFAULT_COUNT})",
+    )
+    parser.add_argument(
+        "-i",
+        "--interval",
+        type=float,
+        default=DEFAULT_INTERVAL,
+        help=(
+            "Seconds between frames; what makes an animated face look different "
+            f"in each (default: {DEFAULT_INTERVAL})"
+        ),
+    )
+    parser.add_argument(
+        "--settle",
+        type=float,
+        default=DEFAULT_SETTLE,
+        help=(
+            "Seconds to let the face run before the first frame, so a capture is "
+            f"not of its opening state (default: {DEFAULT_SETTLE})"
+        ),
+    )
+    parser.add_argument(
+        "--prefix",
+        default="",
+        help="Prepended to every output filename",
+    )
+    parser.add_argument(
+        "--jungle",
+        default="monkey.jungle",
+        help="Jungle file to build, relative to the project directory",
+    )
+    parser.add_argument(
+        "--prg",
+        help="Path inside the container to a prebuilt .prg, skipping the build",
+    )
+    parser.add_argument(
+        "--image",
+        default=DEFAULT_IMAGE,
+        help="Container image carrying the SDK and the device definitions",
+    )
+    parser.add_argument(
+        "--platform",
+        help="Container platform, e.g. linux/amd64 on an arm64 machine",
+    )
+    parser.add_argument(
+        "--screen",
+        default=DEFAULT_SCREEN,
+        help=(
+            "Virtual display size; must be larger than the device render "
+            f"(default: {DEFAULT_SCREEN})"
+        ),
+    )
+    parser.add_argument(
+        "--timezone",
+        help="TZ for the container, which is the time the captured face shows",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT,
+        help=(
+            "Seconds to allow the build and simulator start, which is where an "
+            f"emulated run spends its time (default: {DEFAULT_TIMEOUT})"
+        ),
+    )
+    parser.add_argument(
+        "--ready-timeout",
+        type=int,
+        default=DEFAULT_READY_TIMEOUT,
+        help=(
+            "Seconds to wait for the pushed face to appear on the simulator's "
+            f"screen (default: {DEFAULT_READY_TIMEOUT})"
+        ),
+    )
+    parser.add_argument(
+        "--work-directory",
+        help=(
+            "Where to keep the raw framebuffers and the device definition copied "
+            "out of the container; a temporary directory by default"
+        ),
+    )
+
+    add_verbosity(parser)
+
+
 def print_about():
     """Prints tool information."""
     try:
@@ -166,7 +289,8 @@ def print_about():
     # Using print here (stdout) as this is requested data, not log info
     print(
         "garmin-graphics-generator: "
-        "A CLI tool to generate watch face hero images and launcher icons"
+        "A CLI tool for watch face imagery: simulator screenshots, hero images "
+        "and launcher icons"
     )
     print(f"├─ version:   {tool_version}")
     print("├─ developer: mailto:waclaw.kusnierczyk@gmail.com")
@@ -182,8 +306,8 @@ def run_hero(args, parser: argparse.ArgumentParser) -> int:
             "-o/--output-directory, input_files (unless using --about)"
         )
 
-    # Imported here rather than at module level: the hero pipeline pulls in rembg and
-    # onnxruntime, which the icons command has no use for.
+    # Imported here rather than at module level: the hero pipeline can pull in rembg
+    # and onnxruntime, which the icons command has no use for.
     from . import WatchHeroGenerator  # pylint: disable=import-outside-toplevel
 
     generator = WatchHeroGenerator()
@@ -239,6 +363,46 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
     return 0
 
 
+def run_shots(args, parser: argparse.ArgumentParser) -> int:
+    """Captures frames from the simulator running headlessly in a container."""
+
+    # The counts and timings are checked by run_simulator, before it starts
+    # anything, and reach the caller here as a ShotsError like any other. One home
+    # for the rules, rather than a copy that has to be kept in step.
+    def capture(work_directory: str) -> int:
+        shots = take_shots(
+            project=args.project_directory,
+            product=args.device,
+            output_directory=args.output_directory,
+            work_directory=work_directory,
+            count=args.count,
+            interval=args.interval,
+            settle=args.settle,
+            image=args.image,
+            jungle=args.jungle,
+            prg=args.prg,
+            screen=args.screen,
+            platform=args.platform,
+            timezone=args.timezone,
+            timeout=args.timeout,
+            ready_timeout=args.ready_timeout,
+            prefix=args.prefix,
+        )
+        if not args.silent:
+            print(f"Captured {len(shots)} frame(s) of {args.device}:")
+            for shot in shots:
+                print(f"  {shot.screen_path}")
+                print(f"  {shot.watch_path}")
+        return 0
+
+    if args.work_directory:
+        return capture(args.work_directory)
+    # Held only for the life of the capture: the framebuffer dumps are several
+    # megabytes each and nothing downstream reads them again.
+    with tempfile.TemporaryDirectory(prefix="garmin-shots-") as work_directory:
+        return capture(work_directory)
+
+
 def normalize(argv):
     """
     Routes a legacy flat invocation to the hero command.
@@ -259,7 +423,10 @@ def main(argv=None) -> int:
     argv = normalize(sys.argv[1:] if argv is None else argv)
 
     parser = argparse.ArgumentParser(
-        description="Generate watch face hero images and per-device launcher icons."
+        description=(
+            "Capture watch face screenshots, and generate hero images and "
+            "per-device launcher icons."
+        )
     )
     parser.add_argument(
         "--about", action="store_true", help="Print tool information and exit"
@@ -276,6 +443,11 @@ def main(argv=None) -> int:
     )
     add_icons_arguments(icons_parser)
 
+    shots_parser = subparsers.add_parser(
+        "shots", help="Capture watch face screenshots from the simulator, headlessly"
+    )
+    add_shots_arguments(shots_parser)
+
     args = parser.parse_args(argv)
 
     # Configure logging immediately after parsing
@@ -290,6 +462,12 @@ def main(argv=None) -> int:
             return run_icons(args, icons_parser)
         except LauncherIconError as error:
             icons_parser.error(str(error))
+
+    if args.command == "shots":
+        try:
+            return run_shots(args, shots_parser)
+        except (ShotsError, CaptureError) as error:
+            shots_parser.error(str(error))
 
     if args.command == "hero":
         return run_hero(args, hero_parser)

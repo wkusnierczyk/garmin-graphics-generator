@@ -11,7 +11,6 @@ from io import BytesIO
 from typing import List, Optional, Tuple
 
 from PIL import Image
-from rembg import remove
 
 from .constants import DEFAULT_CONFIG_PATH, EXTENSION_PNG, MODE_RGBA
 
@@ -21,6 +20,35 @@ with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as _f:
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
+
+
+def remove(data: bytes) -> bytes:
+    """
+    Cuts an image out of its background, deferring the import until it is needed.
+
+    rembg pulls in onnxruntime, which is heavy and which an already-transparent
+    input -- everything `shots` produces -- never touches. Keeping the call behind
+    a module-level function of our own also leaves one seam to stub in tests,
+    rather than a name bound at import time.
+    """
+    from rembg import remove as rembg_remove  # pylint: disable=import-outside-toplevel
+
+    return rembg_remove(data)
+
+
+def has_transparency(image: Image.Image) -> bool:
+    """
+    Reports whether an image is already cut out of its background.
+
+    An alpha channel alone does not say so -- a screenshot saved as RGBA is fully
+    opaque -- so this asks whether anything in it is actually transparent.
+    """
+    if image.mode == "P" and "transparency" in image.info:
+        return True
+    if image.mode not in ("RGBA", "LA"):
+        return False
+    alpha = image.getchannel("A")
+    return alpha.getextrema()[0] < 255
 
 
 class WatchHeroGenerator:
@@ -105,14 +133,19 @@ class WatchHeroGenerator:
 
     def process_input_images(self) -> "WatchHeroGenerator":
         """
-        Loads images and removes background (white -> transparent).
-        Stores them in memory for the hero generation step.
+        Loads images, removing the background from any that still have one.
+
+        An input that already carries transparency is taken as it is. That is not
+        an optimisation: `shots` cuts its watch renders against the SDK's own
+        artwork, which is exact, and running a segmentation model over an exact
+        cutout can only degrade it. It also keeps the `shots` to `hero` path off
+        rembg and onnxruntime entirely.
         """
         self._processed_images = []
         total_files = len(self._input_paths)
         pad_width = len(str(total_files))
 
-        logger.info("Starting background removal for %d images...", total_files)
+        logger.info("Preparing %d image(s) for the hero composition...", total_files)
 
         for index, file_path in enumerate(self._input_paths):
             current_num = index + 1
@@ -125,6 +158,12 @@ class WatchHeroGenerator:
                 file_path,
             )
             try:
+                with Image.open(file_path) as opened:
+                    if has_transparency(opened):
+                        logger.debug("%s is already cut out", file_path)
+                        self._processed_images.append(opened.convert(MODE_RGBA))
+                        continue
+
                 with open(file_path, "rb") as input_file:
                     input_data = input_file.read()
                     output_data = remove(input_data)

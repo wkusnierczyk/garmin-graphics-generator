@@ -1,8 +1,8 @@
 """
 Garmin Graphics Generator
 -------------------------
-A library and CLI tool for watch face imagery: hero images from screenshots, and
-per-device launcher icons.
+A library and CLI tool for watch face imagery: screenshots captured from the
+Connect IQ simulator, hero images made from them, and per-device launcher icons.
 """
 import os
 
@@ -21,9 +21,11 @@ def __getattr__(name):
     """
     Imports WatchHeroGenerator on first use.
 
-    The hero pipeline pulls in rembg and onnxruntime, which are heavy and entirely
-    unrelated to launcher icons. Importing them lazily keeps `icons` -- the command
-    a watch face project reruns on every device list change -- to Pillow alone.
+    The hero pipeline can pull in rembg and onnxruntime, which are heavy and
+    entirely unrelated to launcher icons. Importing it lazily keeps `icons` -- the
+    command a watch face project reruns on every device list change -- to Pillow
+    alone. rembg itself is deferred a second time, to the one path that needs it:
+    an input that still has a background. See `core.remove`.
     """
     if name == "WatchHeroGenerator":
         from .core import WatchHeroGenerator  # pylint: disable=import-outside-toplevel
