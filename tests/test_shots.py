@@ -262,6 +262,48 @@ class TestRunSimulatorArguments:
             )
         assert "JUNGLE=pro.jungle" in recorded["command"]
 
+    def test_a_list_of_jungles_reaches_the_compiler_whole(self, tmp_path, monkeypatch):
+        """monkeyc -f takes several files; the value is passed through as one string."""
+        monkeypatch.setattr(shots, "docker_available", lambda: True)
+        project = make_project(tmp_path)
+        (project / "capture.jungle").write_text("base.excludeAnnotations = real\n")
+        recorded = {}
+
+        def fake_run(command, **_):
+            recorded["command"] = command
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr(shots.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError):
+            run_simulator(
+                str(project),
+                "testwatch",
+                str(tmp_path / "work"),
+                jungle="monkey.jungle;capture.jungle",
+            )
+        assert "JUNGLE=monkey.jungle;capture.jungle" in recorded["command"]
+
+    def test_every_jungle_in_a_list_is_checked(self, tmp_path, monkeypatch):
+        """The missing one is named, not the list: that is what the caller has to fix."""
+        monkeypatch.setattr(shots, "docker_available", lambda: True)
+        project = make_project(tmp_path)
+        with pytest.raises(ShotsError, match="has no capture.jungle"):
+            run_simulator(
+                str(project),
+                "testwatch",
+                str(tmp_path / "work"),
+                jungle="monkey.jungle;capture.jungle",
+            )
+
+    def test_an_empty_jungle_is_rejected(self, tmp_path, monkeypatch):
+        """Nothing to build, and no filename to report as missing either."""
+        monkeypatch.setattr(shots, "docker_available", lambda: True)
+        project = make_project(tmp_path)
+        with pytest.raises(ShotsError, match="jungle is empty"):
+            run_simulator(
+                str(project), "testwatch", str(tmp_path / "work"), jungle="  "
+            )
+
 
 def test_docker_available_is_false_without_the_client(monkeypatch):
     monkeypatch.setattr(shots.shutil, "which", lambda _: None)

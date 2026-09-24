@@ -214,6 +214,20 @@ def docker_available() -> bool:
     return probe.returncode == 0
 
 
+def _jungle_files(jungle: str) -> List[str]:
+    """
+    The jungle argument as the list of files it is.
+
+    ``monkeyc -f`` is ``--jungles``: it takes several files separated by ``;`` and
+    lets later ones override earlier ones, which is how a build variant is selected
+    without a second copy of the project's settings -- a one-line jungle that
+    re-includes an annotation the project jungle excludes, say. The value is passed
+    to the compiler as one string either way, so splitting matters only here, where
+    each file is checked to exist before a container is started.
+    """
+    return [name.strip() for name in jungle.split(";") if name.strip()]
+
+
 def run_simulator(
     project: str,
     product: str,
@@ -235,6 +249,10 @@ def run_simulator(
 
     ``work_directory`` is bind-mounted into the container and receives the frames
     and a copy of the device definition that drew them.
+
+    ``jungle`` is what ``monkeyc -f`` takes: one file, or several separated by ``;``
+    with later files overriding earlier ones. Every one of them must exist in the
+    project, and that is checked before Docker is touched.
 
     Frames are taken once the pushed app is on screen, which is waited for rather
     than assumed: the simulator comes up showing no device at all, and how long
@@ -259,8 +277,15 @@ def run_simulator(
         raise ShotsError(f"no such project directory: {project}")
     # Only when something is going to be built: a prebuilt .prg is compiled
     # already, and a directory holding one need not be a project at all.
-    if prg is None and not os.path.isfile(os.path.join(project, jungle)):
-        raise ShotsError(f"{project} has no {jungle}; is it a Connect IQ project?")
+    if prg is None:
+        names = _jungle_files(jungle)
+        if not names:
+            raise ShotsError("no jungle file to build; jungle is empty")
+        for name in names:
+            if not os.path.isfile(os.path.join(project, name)):
+                raise ShotsError(
+                    f"{project} has no {name}; is it a Connect IQ project?"
+                )
 
     work_directory = os.path.abspath(os.path.expanduser(work_directory))
     os.makedirs(work_directory, exist_ok=True)

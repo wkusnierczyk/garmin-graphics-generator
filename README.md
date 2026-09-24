@@ -287,7 +287,8 @@ options:
   --settle SETTLE       Seconds to let the face run before the first frame, so a capture is not of
                         its opening state (default: 6.0)
   --prefix PREFIX       Prepended to every output filename
-  --jungle JUNGLE       Jungle file to build, relative to the project directory
+  --jungle JUNGLE       Jungle file to build, relative to the project directory; several separated
+                        by ';', later ones overriding earlier ones, as monkeyc takes them
   --prg PRG             Path inside the container to a prebuilt .prg, skipping the build
   --image IMAGE         Container image carrying the SDK and the device definitions
   --platform PLATFORM   Container platform, e.g. linux/amd64 on an arm64 machine
