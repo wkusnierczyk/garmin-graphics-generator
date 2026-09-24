@@ -223,7 +223,8 @@ def add_shots_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--jungle",
         default="monkey.jungle",
-        help="Jungle file to build, relative to the project directory",
+        help="Jungle file to build, relative to the project directory; several "
+        "separated by ';', later ones overriding earlier ones, as monkeyc takes them",
     )
     parser.add_argument(
         "--prg",
