@@ -33,6 +33,7 @@ import json
 import os
 import re
 import xml.etree.ElementTree as ElementTree
+from xml.sax.saxutils import escape
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 # Above this many combinations, `all` asks to be forced. A capture is a build and a
@@ -73,11 +74,18 @@ class Setting(NamedTuple):
 
 
 class Property(NamedTuple):
-    """A declared property: where it is declared, and its default there."""
+    """
+    A declared property: its default, and every file that declares it.
+
+    A property can be declared on more than one resource path -- a base file and
+    a device or edition override -- and which one a build takes is monkeyc's
+    business. So every declaration is rewritten, and the default reported is the
+    last one read.
+    """
 
     key: str
     default: str
-    path: str
+    paths: Tuple[str, ...]
 
 
 class Tile(NamedTuple):
@@ -161,7 +169,12 @@ def read_resources(project: str, resource_directories: Sequence[str]) -> Resourc
     strings: Dict[str, str] = {}
 
     for directory in resource_directories:
-        absolute = os.path.join(project, directory)
+        absolute = os.path.realpath(os.path.join(project, directory))
+        root = os.path.realpath(project)
+        if absolute != root and not absolute.startswith(root + os.sep):
+            # An overlay is laid over the project; a file outside it has nowhere
+            # to go, and would be varied without the build ever seeing it.
+            raise VariantsError(f"{directory} is outside the project {project}")
         if not os.path.isdir(absolute):
             raise VariantsError(f"{project} has no resource directory {directory}")
         for path in _xml_files(absolute):
@@ -169,7 +182,12 @@ def read_resources(project: str, resource_directories: Sequence[str]) -> Resourc
             for element in root.iter("property"):
                 key = element.get("id")
                 if key:
-                    properties[key] = Property(key, (element.text or "").strip(), path)
+                    earlier = properties[key].paths if key in properties else ()
+                    properties[key] = Property(
+                        key,
+                        (element.text or "").strip(),
+                        earlier + ((path,) if path not in earlier else ()),
+                    )
             settings_elements.extend(root.iter("setting"))
             for element in root.iter("string"):
                 if element.get("id"):
@@ -230,7 +248,10 @@ def choose_settings(
         key, values = parse_assignment(assignment)
         explicit[key] = values
 
-    names = list(vary) + [key for key in explicit if key not in vary]
+    names = []
+    for key in list(vary) + list(explicit):
+        if key not in names:
+            names.append(key)
     if not names:
         names = [key for key, setting in resources.settings.items() if setting.values]
         if not names:
@@ -385,11 +406,15 @@ def plan_all(
     )
 
 
-def _as_property_text(value) -> str:
+def _as_property_text(value, key: str) -> str:
     """A JSON value as a properties file holds it: ``true``, not ``True``."""
     if isinstance(value, bool):
         return "true" if value else "false"
-    return str(value)
+    if isinstance(value, (str, int)):
+        return str(value)
+    raise VariantsError(
+        f"{key} is {json.dumps(value)} in a case; give a string, integer or boolean"
+    )
 
 
 def plan_cases(resources: Resources, cases_path: str) -> Plan:
@@ -428,7 +453,9 @@ def plan_cases(resources: Resources, cases_path: str) -> Plan:
     combinations = _Combinations()
     tiles = []
     for case in cases:
-        values = [_as_property_text(case.get(s.key, s.default)) for s in settings]
+        values = [
+            _as_property_text(case.get(s.key, s.default), s.key) for s in settings
+        ]
         combination = _overrides(settings, values)
         tiles.append(
             Tile(combinations.index(combination), _describe(settings, combination))
@@ -445,19 +472,25 @@ def rewrite_defaults(text: str, values: Dict[str, str]) -> Tuple[str, List[str]]
     Edited as text rather than through an XML library, which would drop the file's
     comments and reflow it; the build only needs the values changed, and a copy
     that differs from the original in nothing else is easy to check by eye.
-    Returns the new text and the keys it found.
+    Comments are matched and left alone, so a property commented out is neither
+    changed nor counted as found. Values are escaped for XML. Returns the new
+    text and the keys it found.
     """
-    found = []
+    found: List[str] = []
 
     def replace(match):
+        if match.group("key") is None:
+            return match.group(0)
         found.append(match.group("key"))
-        return match.group("open") + values[match.group("key")] + match.group("close")
+        value = escape(values[match.group("key")])
+        return match.group("open") + value + match.group("close")
 
     if not values:
         return text, found
     keys = "|".join(re.escape(key) for key in values)
     pattern = re.compile(
-        r"(?P<open><property\b[^>]*?\bid\s*=\s*\"(?P<key>" + keys + r")\"[^>]*>)"
+        r"<!--.*?-->"
+        r"|(?P<open><property\b[^>]*?\bid\s*=\s*\"(?P<key>" + keys + r")\"[^>]*>)"
         r"(?P<value>[^<]*)(?P<close></property>)",
         re.DOTALL,
     )
@@ -477,8 +510,14 @@ def overlay_files(
     touches, changed or not, so the overlays can be laid over one copy of the
     project in sequence: each puts back what the last one changed.
     """
+    project = os.path.realpath(project)
     touched = sorted(
-        {resources.properties[key].path for c in combinations for key in c}
+        {
+            path
+            for combination in combinations
+            for key in combination
+            for path in resources.properties[key].paths
+        }
     )
     originals = {}
     for path in touched:
@@ -492,7 +531,7 @@ def overlay_files(
             wanted = {
                 key: value
                 for key, value in combination.items()
-                if resources.properties[key].path == path
+                if path in resources.properties[key].paths
             }
             text, found = rewrite_defaults(originals[path], wanted)
             missing = set(wanted) - set(found)

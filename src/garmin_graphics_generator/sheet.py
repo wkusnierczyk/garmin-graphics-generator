@@ -68,8 +68,17 @@ def compose(
     heading_font = _font(max(16, tile_width // 16))
     label_font = _font(max(13, tile_width // 22))
 
+    # A column is as wide as its tile or the widest text under or over it,
+    # whichever is wider, so a long label never runs into the next column.
+    pitch = tile_width
+    for block in blocks:
+        texts = [tile.label for row in block.plan.rows for tile in row.tiles]
+        texts += list(block.plan.columns or ())
+        pitch = max([pitch] + [_text_size(label_font, text)[0] for text in texts])
+    pitch += GAP
+
     # Every row is as tall as its tallest label, and every block as wide as its
-    # widest row; the sheet is as wide as its widest block.
+    # widest row or heading; the sheet is as wide as its widest block.
     layout = []
     width = 0
     height = MARGIN
@@ -99,7 +108,12 @@ def compose(
             height += tile_height + ((TEXT_GAP + label_height) if label_height else 0)
             height += GAP
             rows.append((row, top, tiles_top))
-            width = max(width, len(row.tiles) * (tile_width + GAP) - GAP)
+            width = max(
+                width,
+                len(row.tiles) * pitch - GAP,
+                _text_size(label_font, row.heading)[0],
+            )
+        width = max(width, _text_size(heading_font, block.heading)[0])
         entry.update(
             rows=rows, heading_height=heading_height, columns_height=columns_height
         )
@@ -125,7 +139,7 @@ def compose(
         if block.plan.columns:
             for column, text in enumerate(block.plan.columns):
                 draw.multiline_text(
-                    (MARGIN + column * (tile_width + GAP), y),
+                    (MARGIN + column * pitch, y),
                     text,
                     font=label_font,
                     fill=HEADING_COLOUR,
@@ -136,7 +150,7 @@ def compose(
                     (MARGIN, top), row.heading, font=label_font, fill=HEADING_COLOUR
                 )
             for column, tile in enumerate(row.tiles):
-                x = MARGIN + column * (tile_width + GAP)
+                x = MARGIN + column * pitch
                 with Image.open(block.images[tile.combination]) as frame:
                     frame = frame.convert("RGBA")
                     if frame.size != (tile_width, tile_height):

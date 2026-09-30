@@ -145,21 +145,35 @@ A face with settings has to be reviewed at more than its defaults. Any of the se
 turns `shots` into a survey: one build per combination of settings, all captured in one container,
 laid out as `contact-sheet.png` with each frame labelled, and described in `index.json`.
 
+The options are generic; the settings, resource directories and jungles are the face's own. As a
+worked example, here they are for [Matrix Time](https://github.com/wkusnierczyk/garmin-matrix-time),
+whose Premium edition has settings on its own resource path and draws its always-on screen from a
+build forced by `graphics.jungle`. Clone it and work on the local copy:
+
 ```bash
+git clone https://github.com/wkusnierczyk/garmin-matrix-time.git
+cd garmin-matrix-time
+
 # every value of the time size, the other settings at their defaults
-garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm -o preview/ \
-    --resources resources --resources premium/resources-base --vary timeSize
+garmin-graphics-generator shots -p . -d epix2pro47mm -o preview/ \
+    --resources resources --resources premium/resources-base \
+    --jungle "monkey.jungle;premium.jungle" --vary timeSize
 
 # every size in each style, as a grid: styles across, sizes down
-garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm -o preview/ \
-    --resources resources --resources premium/resources-base --grid timeStyle timeSize
+garmin-graphics-generator shots -p . -d epix2pro47mm -o preview/ \
+    --resources resources --resources premium/resources-base \
+    --jungle "monkey.jungle;premium.jungle" --grid timeStyle timeSize
 
-# the same sweep on the woken screen and on the always-on one
-garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm -o preview/ \
-    --resources resources --resources premium/resources-base --vary timeSize \
+# the time style on the woken screen and on the always-on one
+garmin-graphics-generator shots -p . -d epix2pro47mm -o preview/ \
+    --resources resources --resources premium/resources-base --vary timeStyle \
     --scene "woken=monkey.jungle;premium.jungle" \
     --scene "always-on=monkey.jungle;graphics.jungle;premium.jungle"
 ```
+
+For your own face, name the resource directories its jungle puts on the build's resource path, the
+properties its `settings.xml` declares, and, if it has one, the jungle that forces its always-on
+screen.
 
 **Where the values come from.** The properties, settings and strings under the `--resources`
 directories: a `list` setting contributes its `listEntry` values, labelled as the settings screen
@@ -177,13 +191,18 @@ resource path would be varied and then ignored by the build, and every tile woul
 | `--cases FILE` | the combinations in a JSON list, e.g. `[{"timeSize": "6", "timeStyle": "1"}, {}]` | the handful that matter |
 | `--all` | every combination of the varied settings; refused above 24 without `--force` | everything, when it is small |
 
-`--vary KEY` narrows the settings to those named; without it a sweep or `--all` varies every list and
-boolean setting.
+`--vary KEY` and `--set KEY=...` both name the settings to vary; with neither, a sweep or `--all`
+varies every list and boolean setting. A grid varies its two settings only, and `--cases` takes its
+values from the file only: each refuses a `--vary` or `--set` it would otherwise ignore.
 
 **How a setting is applied.** By rewriting the property's default in a copy of the project inside the
 container, and building that. A fresh simulator has no settings file for the app, so it draws every
-property at the default its build declares. The simulator keeps a settings file across restarts, so it
-is removed, and the simulator restarted, before each build is pushed. Writing the simulator's settings
+property at the default its build declares. Before each build is pushed the simulator is
+stopped, the app's settings and storage under `/tmp/com.garmin.connectiq/GARMIN/APPS` are removed, and
+it is started again. On a desktop the simulator keeps an app's settings there between runs, and they
+would override a new build's defaults. In the tester image the settings directory has been found empty
+between builds -- nothing edits the settings there -- so the removal is a guard, not a step the capture
+depends on today. The restart is also what makes "the face is on screen" mean this build's face. Writing the simulator's settings
 file directly would save a build per combination, but its format is not documented. The project
 itself is never written to.
 
@@ -192,14 +211,14 @@ of its own. A face that draws a separate always-on screen usually needs a build-
 in the simulator, and a scene is how that switch is passed without this tool knowing any face's gating.
 Without `--scene`, `--jungle` is the one scene.
 
-**Output.** One directory per build, `NN-<setting>-<value>` (under the scene's name when there are
-scenes), holding `screen-<i>.png` and `watch-<i>.png` as a plain capture does; `contact-sheet.png`,
+**Output.** One directory per build (under the scene's name when there are scenes), named by the
+settings it changes -- `02-timeStyle-1`, `05-timeSize-6_timeStyle-1`, or `01-defaults` -- holding `screen-<i>.png` and `watch-<i>.png` as a plain capture does; `contact-sheet.png`,
 made of each build's first screen; and `index.json`, mapping each directory to its scene, its jungle
 and the value of every property. A survey takes one frame per build unless `-n` asks for more. A
 rerun removes the directories the previous `index.json` lists, and nothing else.
 
 **Cost.** Every build is compiled before the first capture, in the one container, so the image is
-started once. Each build then costs a simulator start and `--settle`.
+started once. `--timeout` bounds each build, not all of them together. Each build then costs a simulator start and `--settle`.
 Measured on an arm64 Mac, where the image runs emulated: four builds of a watch face compiled in
 3 min 37 s, and each was then captured in about 25 s -- about five and a half minutes for the whole
 survey.
@@ -394,14 +413,14 @@ settings:
   --cases FILE          A JSON list of combinations, e.g. [{"timeSize": "6"}, {}]
   --all                 Every combination of the varied settings; refused above 24
   --force               Allow --all above 24 combinations
-  --vary KEY            A property to vary; repeat for more. Default: every list and boolean
-                        setting
+  --vary KEY            A property to vary; repeat for more. Default, with no --set either: every
+                        list and boolean setting
   --set KEY=VALUE[,VALUE...]
                         The values to try for a property, replacing those its setting lists
   --resources DIR       A resource directory the build uses, relative to the project; repeat for
                         more (default: resources)
-  --scene NAME=JUNGLE   Capture every combination with this jungle list too, under NAME, e.g.
-                        always-on='monkey.jungle;aod.jungle'; replaces --jungle
+  --scene NAME=JUNGLE   Capture every combination with this jungle list, under NAME, e.g. always-
+                        on='monkey.jungle;aod.jungle'; repeat for more; replaces --jungle
 ```
 
 ```bash

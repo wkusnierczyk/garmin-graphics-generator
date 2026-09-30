@@ -240,3 +240,57 @@ class TestOverlays:
 def test_slug_names_a_combination():
     assert variants.slug({}) == "defaults"
     assert variants.slug({"size": "2", "hue": "a b"}) == "size-2_hue-a-b"
+
+
+class TestReviewFixes:
+    def test_every_declaration_of_a_property_is_rewritten(self, project):
+        """monkeyc decides which one a build takes; both must carry the value."""
+        (project / "extra" / "properties.xml").write_text(
+            '<resources><property id="size" type="number">1</property></resources>'
+        )
+        resources = variants.read_resources(str(project), ["resources", "extra"])
+        assert len(resources.properties["size"].paths) == 2
+
+        (overlay,) = variants.overlay_files(str(project), resources, [{"size": "2"}])
+        assert sorted(overlay) == [
+            "extra/properties.xml",
+            "resources/properties/properties.xml",
+        ]
+        assert all('"size" type="number">2<' in text for text in overlay.values())
+
+    def test_a_commented_out_property_is_left_alone(self):
+        text = '<!-- <property id="size">9</property> -->\n<property id="size">1</property>'
+        rewritten, found = variants.rewrite_defaults(text, {"size": "2"})
+        assert rewritten == (
+            '<!-- <property id="size">9</property> -->\n<property id="size">2</property>'
+        )
+        assert found == ["size"]
+
+    def test_only_a_commented_out_property_is_not_found(self):
+        _, found = variants.rewrite_defaults(
+            '<!-- <property id="size">9</property> -->', {"size": "2"}
+        )
+        assert found == []
+
+    def test_a_value_is_escaped(self):
+        rewritten, _ = variants.rewrite_defaults(
+            '<property id="label">x</property>', {"label": "a&b<c"}
+        )
+        assert rewritten == '<property id="label">a&amp;b&lt;c</property>'
+
+    def test_a_resource_directory_outside_the_project_is_refused(self, project):
+        with pytest.raises(VariantsError, match="outside the project"):
+            variants.read_resources(str(project), ["../elsewhere"])
+
+    def test_a_case_value_must_be_a_scalar(self, resources, tmp_path):
+        cases = tmp_path / "cases.json"
+        cases.write_text(json.dumps([{"size": None}]))
+        with pytest.raises(VariantsError, match="size is null"):
+            variants.plan_cases(resources, str(cases))
+
+    def test_a_setting_named_twice_is_varied_once(self, resources):
+        keys = [
+            s.key
+            for s in variants.choose_settings(resources, ["size", "size"], ["size=0,2"])
+        ]
+        assert keys == ["size"]

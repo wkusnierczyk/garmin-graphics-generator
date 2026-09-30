@@ -66,16 +66,27 @@ def make_plan(
     if strategy == variants.CASES:
         if not cases:
             raise variants.VariantsError("the cases strategy needs a cases file")
+        if vary or assignments:
+            # A case names its values itself; a --vary or --set beside it would
+            # look like it applied and be ignored.
+            raise variants.VariantsError("--cases takes its values from the file only")
         return variants.plan_cases(resources, cases)
     if strategy == variants.GRID:
         if not grid or len(grid) != 2:
             raise variants.VariantsError("a grid names two settings: ACROSS DOWN")
-        # A grid varies its two settings, plus any others named with values.
-        named = list(vary) or list(grid)
-        for key in grid:
-            if key not in named:
-                named.append(key)
-        chosen = variants.choose_settings(resources, named, assignments)
+        # --vary and --set may narrow the grid's own two settings, and nothing
+        # else: a third setting has no place on two axes, and would be dropped.
+        extra = [
+            key
+            for key in list(vary)
+            + [variants.parse_assignment(a)[0] for a in assignments]
+            if key not in grid
+        ]
+        if extra:
+            raise variants.VariantsError(
+                f"a grid varies {grid[0]} and {grid[1]} only, not {', '.join(extra)}"
+            )
+        chosen = variants.choose_settings(resources, list(grid), assignments)
         return variants.plan_grid(chosen, across=grid[0], down=grid[1])
     chosen = variants.choose_settings(resources, vary, assignments)
     if strategy == variants.ALL:
@@ -105,12 +116,18 @@ def _clear_previous_survey(output_directory: str) -> None:
     except (OSError, ValueError):
         return
     root = os.path.abspath(output_directory)
+    if not isinstance(previous, dict):
+        return
     for entry in previous.get("captures", []):
+        if not isinstance(entry, dict):
+            continue
         directory = os.path.abspath(os.path.join(root, entry.get("directory", "")))
         # Never outside the output directory, whatever a stale index says.
         if directory.startswith(root + os.sep) and os.path.isdir(directory):
             shutil.rmtree(directory)
     for scene in previous.get("scenes", []):
+        if not isinstance(scene, str):
+            continue
         directory = os.path.join(output_directory, scene)
         if scene and os.path.isdir(directory) and not os.listdir(directory):
             os.rmdir(directory)
@@ -124,9 +141,26 @@ def run_survey(
     plan: variants.Plan,
     resources: variants.Resources,
     scenes: Sequence[Scene],
+    force: bool = False,
     **options,
 ) -> Survey:
-    """Captures every combination of ``plan`` in every scene, and lays them out."""
+    """
+    Captures every combination of ``plan`` in every scene, and lays them out.
+
+    `--all`'s cap is checked here as well as in the plan, against the builds
+    rather than the combinations, because every scene multiplies them.
+    """
+    names = [scene.name for scene in scenes]
+    if len(set(names)) != len(names):
+        raise variants.VariantsError(
+            "two scenes share a name, and would write over each other's frames"
+        )
+    total = len(plan.combinations) * len(scenes)
+    if plan.strategy == variants.ALL and total > variants.ALL_CAP and not force:
+        raise variants.VariantsError(
+            f"{total} builds across {len(scenes)} scenes is more than "
+            f"{variants.ALL_CAP}; narrow them with --vary, or pass --force"
+        )
     project = os.path.abspath(os.path.expanduser(project))
     output_directory = os.path.abspath(os.path.expanduser(output_directory))
     os.makedirs(output_directory, exist_ok=True)

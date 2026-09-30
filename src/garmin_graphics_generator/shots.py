@@ -116,7 +116,7 @@ class Shot(NamedTuple):
 # It probes rather than sleeping a flat interval because the launcher returns long
 # before the simulator accepts connections.
 _SETUP_SCRIPT = r"""
-set -eu
+set -eu -o pipefail
 
 fail() { echo "shots: $*" >&2; echo failed > "$OUT/status"; exit 1; }
 
@@ -131,7 +131,10 @@ if [ -z "${PRG:-}" ]; then
     # Variants are laid over a copy, so the project itself is never written to.
     SOURCE=/tmp/shots_source
     mkdir -p "$SOURCE"
-    tar -C /project --exclude=./.git -cf - . | tar -C "$SOURCE" -xf -
+    # The work directory is left out when it sits inside the project: it holds
+    # the overlays and framebuffer dumps, which are no part of the build.
+    tar -C /project --exclude=./.git ${WORK_IN_PROJECT:+--exclude="./$WORK_IN_PROJECT"} \
+      -cf - . | tar -C "$SOURCE" -xf -
   fi
   cd "$SOURCE"
   # Every build before any capture: a build that fails does so before the
@@ -141,11 +144,12 @@ if [ -z "${PRG:-}" ]; then
     eval "jungle=\$JUNGLE_$i"
     if [ -d "$OUT/variants/$i" ]; then cp -R "$OUT/variants/$i/." "$SOURCE/"; fi
     echo "shots: building $i/$BUILDS for $PRODUCT"
+    # Reported, so the caller's deadline is per build rather than for all of them.
+    echo "building $i" > "$OUT/status"
     "$SDK_BIN/monkeyc" -w -y /tmp/shots_key -d "$PRODUCT" -f "$jungle" \
       -o "/tmp/shots-$i.prg" || fail "build $i failed for $PRODUCT"
   done
 else
-  [ "$BUILDS" -eq 1 ] || fail "a prebuilt .prg is a single build"
   test -f "$PRG" || fail "no such build: $PRG"
   cp "$PRG" /tmp/shots-1.prg
 fi
@@ -169,6 +173,13 @@ until [ -e /tmp/fb/Xvfb_screen0 ]; do
 done
 
 port_open() { (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; }
+# Whether either process group still has a live member. Zombies do not count:
+# this script is the container's init, so an exited process lingers as one until
+# it is reaped, and kill -0 would report it alive.
+running() {
+  ps -eo pgid=,stat= | awk -v a="$1" -v b="$2" \
+    '($1 == a || $1 == b) && $2 !~ /^Z/ { live = 1 } END { exit !live }'
+}
 
 # One simulator per build, each started fresh. A running simulator keeps the app's
 # settings in a .SET file and draws those rather than a new build's defaults, so
@@ -179,15 +190,25 @@ port_open() { (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; }
 for i in $(seq 1 "$BUILDS"); do
   if [ "$i" -gt 1 ]; then
     until [ -e "$OUT/go-$i" ]; do sleep 0.5; done
+    # Stopped and waited for as process groups, not by the port closing: a
+    # simulator can close its port before it has finished writing the app's
+    # settings, and a write landing after the removal below would hand this
+    # build the last one's settings. TERM first; KILL for what ignores it.
     kill -TERM -- "-$PUSH" "-$SIMULATOR" 2>/dev/null || true
     waited=0
-    while port_open; do
+    while running "$SIMULATOR" "$PUSH"; do
       waited=$((waited + 1))
+      [ "$waited" -ne 20 ] || kill -KILL -- "-$PUSH" "-$SIMULATOR" 2>/dev/null || true
       [ "$waited" -lt 60 ] || fail "the simulator did not stop within ${waited}s"
-      sleep 1
+      sleep 0.5
     done
   fi
-  find /tmp /root -path '*/APPS/SETTINGS/*' -type f -delete 2>/dev/null || true
+  # The app's settings and its storage, both kept by the simulator between runs
+  # of the same app. Settings would override this build's defaults; storage would
+  # carry state from one build into the next.
+  find /tmp /root -path /tmp/shots_source -prune -o -type f \
+    \( -path '*/GARMIN/APPS/SETTINGS/*' -o -path '*/GARMIN/APPS/DATA/*' \) \
+    -print -delete 2>/dev/null || true
 
   setsid "$SDK_BIN/connectiq" >/tmp/simulator.log 2>&1 &
   SIMULATOR=$!
@@ -416,6 +437,9 @@ def run_builds(
     }
     for number, build in enumerate(builds, start=1):
         environment[f"JUNGLE_{number}"] = build.jungle
+    relative_work = os.path.relpath(work_directory, project)
+    if not relative_work.startswith(os.pardir) and relative_work != os.curdir:
+        environment["WORK_IN_PROJECT"] = relative_work
     if prg is not None:
         environment["PRG"] = prg
     if timezone is not None:
@@ -538,7 +562,16 @@ def _await_ready(
     status_path = os.path.join(work_directory, STATUS_NAME)
     wanted = f"ready {number}"
     deadline = time.monotonic() + build_timeout
-    while _read_status(status_path) not in (wanted, "failed"):
+    last = _read_status(status_path)
+    while last not in (wanted, "failed"):
+        # The deadline restarts whenever the container reports progress, so it
+        # bounds one build rather than all of them: a survey of forty builds
+        # under emulation is normal, and one build taking half an hour is not.
+        status = _read_status(status_path)
+        if status != last:
+            last = status
+            deadline = time.monotonic() + build_timeout
+            continue
         if time.monotonic() > deadline:
             raise ShotsError(
                 f"the container did not finish setting up within {build_timeout}s:\n"
@@ -716,30 +749,24 @@ def take_shots(
     prefix: str = "",
 ) -> List[Shot]:
     """Runs a capture and cuts what it produced. The whole command, in one call."""
-    frames = run_simulator(
+    return take_builds(
         project=project,
         product=product,
+        output_directory=output_directory,
         work_directory=work_directory,
+        builds=[Build(jungle=jungle)],
+        prefix=prefix,
         count=count,
         interval=interval,
         settle=settle,
         image=image,
-        jungle=jungle,
         prg=prg,
         screen=screen,
         platform=platform,
         timezone=timezone,
         timeout=timeout,
         ready_timeout=ready_timeout,
-    )
-    devices_directory = os.path.join(work_directory, DEVICE_SUBDIRECTORY)
-    return cut_frames(
-        frames=frames,
-        product=product,
-        devices_directory=devices_directory,
-        output_directory=output_directory,
-        prefix=prefix,
-    )
+    )[0]
 
 
 def take_builds(

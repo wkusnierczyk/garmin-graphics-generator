@@ -162,28 +162,32 @@ class TestRunSurvey:
         assert out.is_dir()
 
 
+# Wider than any label in these tests, so a column is exactly one tile.
+T = 300
+
+
 class TestSheet:
     def test_a_grid_is_as_wide_as_its_columns(self, resources, tmp_path):
         plan = survey.make_plan(resources, "grid", grid=["style", "size"])
         images = []
         for number in range(len(plan.combinations)):
             path = tmp_path / f"{number}.png"
-            Image.new("RGBA", (50, 50), (number * 30, 0, 0, 255)).save(path)
+            Image.new("RGBA", (T, T), (number * 30, 0, 0, 255)).save(path)
             images.append(str(path))
 
         path = sheet.compose(
             [sheet.Block("", plan, images)], str(tmp_path / "sheet.png"), title="t"
         )
         width, height = Image.open(path).size
-        assert width == 2 * sheet.MARGIN + 2 * 50 + sheet.GAP
-        assert height > 3 * 50
+        assert width == 2 * sheet.MARGIN + 2 * T + sheet.GAP
+        assert height > 3 * T
 
     def test_each_tile_shows_its_own_frame(self, resources, tmp_path):
         plan = survey.make_plan(resources, vary=["style"])
         images = []
         for number, colour in enumerate([(255, 0, 0, 255), (0, 0, 255, 255)]):
             path = tmp_path / f"{number}.png"
-            Image.new("RGBA", (50, 50), colour).save(path)
+            Image.new("RGBA", (T, T), colour).save(path)
             images.append(str(path))
 
         sheet_path = sheet.compose(
@@ -194,13 +198,27 @@ class TestSheet:
         top = next(
             y
             for y in range(image.height)
-            if image.getpixel((sheet.MARGIN + 25, y)) == (255, 0, 0)
+            if image.getpixel((sheet.MARGIN + T // 2, y)) == (255, 0, 0)
         )
-        assert image.getpixel((sheet.MARGIN + 50 + sheet.GAP + 25, top + 25)) == (
+        assert image.getpixel(
+            (sheet.MARGIN + T + sheet.GAP + T // 2, top + T // 2)
+        ) == (
             0,
             0,
             255,
         )
+
+    def test_a_label_wider_than_its_tile_widens_the_columns(self, resources, tmp_path):
+        """Otherwise the label runs into the next column."""
+        plan = survey.make_plan(resources, vary=["style"])
+        images = []
+        for number in range(len(plan.combinations)):
+            path = tmp_path / f"{number}.png"
+            Image.new("RGBA", (10, 10), (255, 0, 0, 255)).save(path)
+            images.append(str(path))
+
+        path = sheet.compose([sheet.Block("", plan, images)], str(tmp_path / "s.png"))
+        assert Image.open(path).size[0] > 2 * sheet.MARGIN + 2 * 10 + sheet.GAP
 
 
 class TestCommandLine:
@@ -276,3 +294,73 @@ class TestCommandLine:
         )
         cli.main(["shots", "-q", "-p", str(project), "-d", "watch"])
         assert called["count"] == cli.DEFAULT_COUNT
+
+
+class TestSurveyChecks:
+    def test_a_grid_refuses_a_third_setting(self, resources):
+        with pytest.raises(VariantsError, match="not glow"):
+            survey.make_plan(
+                resources, "grid", grid=["style", "size"], assignments=["glow=true"]
+            )
+
+    def test_a_grid_may_narrow_its_own_settings(self, resources):
+        plan = survey.make_plan(
+            resources, "grid", grid=["style", "size"], assignments=["size=0,2"]
+        )
+        assert len(plan.combinations) == 4
+
+    def test_cases_refuse_vary_and_set(self, resources, tmp_path):
+        cases = tmp_path / "cases.json"
+        cases.write_text("[{}]")
+        with pytest.raises(VariantsError, match="from the file only"):
+            survey.make_plan(resources, "cases", vary=["size"], cases=str(cases))
+
+    def test_scenes_must_have_different_names(self, project, resources, tmp_path):
+        scenes = [survey.Scene("a", "monkey.jungle"), survey.Scene("a", "aod.jungle")]
+        with pytest.raises(VariantsError, match="share a name"):
+            survey.run_survey(
+                str(project),
+                "watch",
+                str(tmp_path / "o"),
+                str(tmp_path / "w"),
+                survey.make_plan(resources, vary=["size"]),
+                resources,
+                scenes,
+            )
+
+    def test_the_all_cap_counts_scenes(self, project, resources, tmp_path, monkeypatch):
+        monkeypatch.setattr(survey, "take_builds", fake_take_builds({}))
+        plan = survey.make_plan(
+            resources, "all", assignments=["hue=" + ",".join(str(n) for n in range(13))]
+        )
+        scenes = [survey.Scene("a", "monkey.jungle"), survey.Scene("b", "aod.jungle")]
+        with pytest.raises(VariantsError, match="26 builds across 2 scenes"):
+            survey.run_survey(
+                str(project),
+                "watch",
+                str(tmp_path / "o"),
+                str(tmp_path / "w"),
+                plan,
+                resources,
+                scenes,
+            )
+        result = survey.run_survey(
+            str(project),
+            "watch",
+            str(tmp_path / "o"),
+            str(tmp_path / "w"),
+            plan,
+            resources,
+            scenes,
+            force=True,
+        )
+        assert result.builds == 26
+
+    def test_a_malformed_index_is_ignored(self, tmp_path):
+        (tmp_path / "index.json").write_text("[1, 2]")
+        survey._clear_previous_survey(str(tmp_path))
+
+    def test_force_without_all_is_refused(self, monkeypatch, project, tmp_path, capsys):
+        with pytest.raises(SystemExit):
+            TestCommandLine().run(monkeypatch, project, tmp_path, "--force")
+        assert "only lifts the cap on --all" in capsys.readouterr().err

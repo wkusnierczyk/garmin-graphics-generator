@@ -328,8 +328,8 @@ def add_settings_arguments(parser: argparse.ArgumentParser):
         action="append",
         default=[],
         metavar="KEY",
-        help="A property to vary; repeat for more. Default: every list and "
-        "boolean setting",
+        help="A property to vary; repeat for more. Default, with no --set "
+        "either: every list and boolean setting",
     )
     group.add_argument(
         "--set",
@@ -351,8 +351,8 @@ def add_settings_arguments(parser: argparse.ArgumentParser):
         action="append",
         default=[],
         metavar="NAME=JUNGLE",
-        help="Capture every combination with this jungle list too, under NAME, "
-        "e.g. always-on='monkey.jungle;aod.jungle'; replaces --jungle",
+        help="Capture every combination with this jungle list, under NAME, e.g. "
+        "always-on='monkey.jungle;aod.jungle'; repeat for more; replaces --jungle",
     )
 
 
@@ -450,6 +450,7 @@ def surveying(args) -> bool:
         or args.assignments
         or args.scene
         or args.resources
+        or args.force
     )
 
 
@@ -457,6 +458,8 @@ def run_survey_command(args, work_directory: str) -> int:
     """Captures the face across its settings and writes the contact sheet."""
     if args.prg:
         raise VariantsError("--prg cannot be varied; the survey builds each variant")
+    if args.force and args.strategy != "all":
+        raise VariantsError("--force only lifts the cap on --all")
     if args.grid:
         strategy = "grid"
     elif args.cases:
@@ -483,6 +486,7 @@ def run_survey_command(args, work_directory: str) -> int:
         plan=plan,
         resources=resources,
         scenes=scenes,
+        force=args.force,
         count=DEFAULT_SURVEY_COUNT if args.count is None else args.count,
         interval=args.interval,
         settle=args.settle,

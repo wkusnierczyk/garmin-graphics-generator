@@ -341,3 +341,26 @@ def test_captures_a_real_watch_face(tmp_path):
     # The surround is cut away, and the watch is not.
     assert first.getpixel((0, 0))[3] == 0
     assert first.getpixel((first.width // 2, first.height // 2))[3] == 255
+
+
+def test_the_build_deadline_restarts_on_progress(tmp_path, monkeypatch):
+    """--timeout bounds one build, not the sum of a survey's builds."""
+    status = tmp_path / shots.STATUS_NAME
+    reports = iter(["building 1", "building 2", "building 3", "ready 1"])
+    clock = {"now": 0.0}
+
+    def sleep(_seconds):
+        # Each poll takes 40 of a 60 s deadline; only a restart keeps it alive.
+        clock["now"] += 40
+        status.write_text(next(reports))
+
+    monkeypatch.setattr(shots.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(shots.time, "sleep", sleep)
+    monkeypatch.setattr(shots, "_container_running", lambda _c: True)
+
+    def stop(*_args, **_kwargs):
+        raise RuntimeError("reached the screen wait")
+
+    monkeypatch.setattr(shots, "DeviceRender", stop)
+    with pytest.raises(RuntimeError, match="screen wait"):
+        shots._await_ready("c", str(tmp_path), "testwatch", 60, 60, 1)
