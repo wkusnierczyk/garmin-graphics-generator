@@ -3,6 +3,7 @@
 A CLI tool and library for Garmin watch face imagery.   
 It:
 * captures watch face screenshots from the Connect IQ simulator, headlessly;
+* captures a watch face across its settings, as a labelled contact sheet;
 * removes white backgrounds from screenshots;
 * generates a composite "hero" pixel image with watch faces scattered randomly;
 * creates copies of input files resized to a common width;
@@ -23,6 +24,10 @@ Implementation language: Python.
   Runs the Connect IQ simulator in a container under `Xvfb`, pushes the project's build into it, and
   writes both the device screen at native resolution and the frame set into the SDK's own watch
   render, background already transparent. No GUI, and no screen-recording permission.
+* **Settings contact sheet**  
+  Reads the settings a project declares, builds the face once per combination worth seeing (one
+  setting at a time, a grid of two, a list of cases, or all of them), and lays the frames out on one
+  image with each labelled by its values -- for reviewing a setting before it merges.
 * **Background removal**  
   Automatically strips white backgrounds from input images. An input that is already cut out -- every
   `watch-*.png` from `shots` -- is taken as it is, so that path never loads `rembg` at all.
@@ -133,6 +138,76 @@ simulator comes up showing no device at all, and `monkeydo` takes under a second
 natively against the better part of a minute under emulation. `--settle` then lets the face run
 before the first frame is kept, so a capture is not of an animation's opening state, and `--interval`
 spaces the rest so each frame differs.
+
+### Across settings
+
+A face with settings has to be reviewed at more than its defaults. Any of the settings options below
+turns `shots` into a survey: one build per combination of settings, all captured in one container,
+laid out as `contact-sheet.png` with each frame labelled, and described in `index.json`.
+
+```bash
+# every value of the time size, the other settings at their defaults
+garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm -o preview/ \
+    --resources resources --resources premium/resources-base --vary timeSize
+
+# every size in each style, as a grid: styles across, sizes down
+garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm -o preview/ \
+    --resources resources --resources premium/resources-base --grid timeStyle timeSize
+
+# the same sweep on the woken screen and on the always-on one
+garmin-graphics-generator shots -p ../my-watch-face -d epix2pro47mm -o preview/ \
+    --resources resources --resources premium/resources-base --vary timeSize \
+    --scene "woken=monkey.jungle;premium.jungle" \
+    --scene "always-on=monkey.jungle;graphics.jungle;premium.jungle"
+```
+
+**Where the values come from.** The properties, settings and strings under the `--resources`
+directories: a `list` setting contributes its `listEntry` values, labelled as the settings screen
+labels them, and a `boolean` contributes `true` and `false`. The directories are named rather than
+discovered because which ones a build uses is the jungle's business: a file on another edition's
+resource path would be varied and then ignored by the build, and every tile would look the same.
+`--set KEY=VALUE,VALUE` gives the values of anything else -- a number, a colour -- or narrows a list.
+
+**Which combinations.** A full product is rarely what you want, and grows fast:
+
+| option | captures | answers |
+|:--|:--|:--|
+| `--sweep` (the default) | one setting at a time, the others at their defaults; the defaults are built once | what does each setting do |
+| `--grid ACROSS DOWN` | every pair of values of two settings, as columns by rows | how do these two interact |
+| `--cases FILE` | the combinations in a JSON list, e.g. `[{"timeSize": "6", "timeStyle": "1"}, {}]` | the handful that matter |
+| `--all` | every combination of the varied settings; refused above 24 without `--force` | everything, when it is small |
+
+`--vary KEY` narrows the settings to those named; without it a sweep or `--all` varies every list and
+boolean setting.
+
+**How a setting is applied.** By rewriting the property's default in a copy of the project inside the
+container, and building that. A fresh simulator has no settings file for the app, so it draws every
+property at the default its build declares. The simulator keeps a settings file across restarts, so it
+is removed, and the simulator restarted, before each build is pushed. Writing the simulator's settings
+file directly would save a build per combination, but its format is not documented. The project
+itself is never written to.
+
+**Scenes.** `--scene NAME=JUNGLE` captures every combination with that jungle list, under a heading
+of its own. A face that draws a separate always-on screen usually needs a build-time switch to show it
+in the simulator, and a scene is how that switch is passed without this tool knowing any face's gating.
+Without `--scene`, `--jungle` is the one scene.
+
+**Output.** One directory per build, `NN-<setting>-<value>` (under the scene's name when there are
+scenes), holding `screen-<i>.png` and `watch-<i>.png` as a plain capture does; `contact-sheet.png`,
+made of each build's first screen; and `index.json`, mapping each directory to its scene, its jungle
+and the value of every property. A survey takes one frame per build unless `-n` asks for more. A
+rerun removes the directories the previous `index.json` lists, and nothing else.
+
+**Cost.** Every build is compiled before the first capture, in the one container, so the image is
+started once. Each build then costs a simulator start and `--settle`.
+Measured on an arm64 Mac, where the image runs emulated: four builds of a watch face compiled in
+3 min 37 s, and each was then captured in about 25 s -- about five and a half minutes for the whole
+survey.
+
+**Not solved yet.** The clock moves between builds, so tiles taken a minute apart show different
+times; `--timezone` fixes the zone, not the minute, and the simulator has no command-line hook for a
+fixed time. An animated face also draws differently in every frame. A setting across several devices is
+one run per device.
 
 ## Launcher icons
 
@@ -271,7 +346,10 @@ usage: garmin-graphics-generator shots [-h] [-p PROJECT_DIRECTORY] -d DEVICE [-o
                                        [--image IMAGE] [--platform PLATFORM] [--screen SCREEN]
                                        [--timezone TIMEZONE] [--timeout TIMEOUT]
                                        [--ready-timeout READY_TIMEOUT]
-                                       [--work-directory WORK_DIRECTORY] [-v | -q]
+                                       [--work-directory WORK_DIRECTORY] [--sweep |
+                                       --grid ACROSS DOWN | --cases FILE | --all] [--force]
+                                       [--vary KEY] [--set KEY=VALUE[,VALUE...]] [--resources DIR]
+                                       [--scene NAME=JUNGLE] [-v | -q]
 
 options:
   -h, --help            show this help message and exit
@@ -280,7 +358,8 @@ options:
   -d, --device DEVICE   Product to capture, as named in manifest.xml (e.g. epix2pro47mm)
   -o, --output-directory OUTPUT_DIRECTORY
                         Where to write the screen and watch images
-  -n, --count COUNT     How many frames to capture (default: 4)
+  -n, --count COUNT     How many frames to capture (default: 4, or 1 per build when varying
+                        settings)
   -i, --interval INTERVAL
                         Seconds between frames; what makes an animated face look different in each
                         (default: 3.0)
@@ -305,6 +384,24 @@ options:
                         the container; a temporary directory by default
   -v, --verbose         Enable verbose output
   -q, --silent          Suppress all output except errors
+
+settings:
+  Capture one build per combination of settings, and lay the frames out on a labelled contact-
+  sheet.png with an index.json. Any of these turns it on.
+
+  --sweep               Vary one setting at a time, the others at their defaults (the default)
+  --grid ACROSS DOWN    Every pair of values of two settings, as columns by rows
+  --cases FILE          A JSON list of combinations, e.g. [{"timeSize": "6"}, {}]
+  --all                 Every combination of the varied settings; refused above 24
+  --force               Allow --all above 24 combinations
+  --vary KEY            A property to vary; repeat for more. Default: every list and boolean
+                        setting
+  --set KEY=VALUE[,VALUE...]
+                        The values to try for a property, replacing those its setting lists
+  --resources DIR       A resource directory the build uses, relative to the project; repeat for
+                        more (default: resources)
+  --scene NAME=JUNGLE   Capture every combination with this jungle list too, under NAME, e.g.
+                        always-on='monkey.jungle;aod.jungle'; replaces --jungle
 ```
 
 ```bash

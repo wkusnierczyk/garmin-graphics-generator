@@ -35,7 +35,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import List, NamedTuple, Optional, Sequence
+from typing import Dict, List, NamedTuple, Optional, Sequence
 
 from .capture import CaptureError, DeviceRender, read_xwd
 
@@ -74,10 +74,27 @@ FRAME_PREFIX = "frame"
 DEVICE_SUBDIRECTORY = "device"
 STATUS_NAME = "status"
 PROBE_NAME = "probe.xwd"
+GO_PREFIX = "go"
+VARIANTS_SUBDIRECTORY = "variants"
 
 
 class ShotsError(Exception):
     """Raised when the simulator cannot be run, or produced nothing usable."""
+
+
+class Build(NamedTuple):
+    """
+    One build to capture.
+
+    ``name`` is the subdirectory its images go to, ``""`` for the output directory
+    itself. ``files`` maps a path relative to the project to the text it has in
+    this build, laid over a copy of the project before compiling; that is how a
+    variant changes a property's default without the project being written to.
+    """
+
+    name: str = ""
+    jungle: str = "monkey.jungle"
+    files: Optional[Dict[str, str]] = None
 
 
 class Shot(NamedTuple):
@@ -109,12 +126,29 @@ if [ -z "${PRG:-}" ]; then
   openssl genrsa -out /tmp/shots_key.pem 4096 2>/dev/null
   openssl pkcs8 -topk8 -inform PEM -outform DER \
     -in /tmp/shots_key.pem -out /tmp/shots_key -nocrypt
-  PRG=/tmp/shots.prg
-  echo "shots: building $PRODUCT"
-  "$SDK_BIN/monkeyc" -w -y /tmp/shots_key -d "$PRODUCT" -f "$JUNGLE" -o "$PRG" \
-    || fail "build failed for $PRODUCT"
+  SOURCE=/project
+  if [ -d "$OUT/variants" ]; then
+    # Variants are laid over a copy, so the project itself is never written to.
+    SOURCE=/tmp/shots_source
+    mkdir -p "$SOURCE"
+    tar -C /project --exclude=./.git -cf - . | tar -C "$SOURCE" -xf -
+  fi
+  cd "$SOURCE"
+  # Every build before any capture: a build that fails does so before the
+  # simulator has been waited for, and the builds share one JVM warm-up in the
+  # page cache if nothing else.
+  for i in $(seq 1 "$BUILDS"); do
+    eval "jungle=\$JUNGLE_$i"
+    if [ -d "$OUT/variants/$i" ]; then cp -R "$OUT/variants/$i/." "$SOURCE/"; fi
+    echo "shots: building $i/$BUILDS for $PRODUCT"
+    "$SDK_BIN/monkeyc" -w -y /tmp/shots_key -d "$PRODUCT" -f "$jungle" \
+      -o "/tmp/shots-$i.prg" || fail "build $i failed for $PRODUCT"
+  done
+else
+  [ "$BUILDS" -eq 1 ] || fail "a prebuilt .prg is a single build"
+  test -f "$PRG" || fail "no such build: $PRG"
+  cp "$PRG" /tmp/shots-1.prg
 fi
-test -f "$PRG" || fail "no such build: $PRG"
 
 # The device definition travels with the frames: what a frame is cut against has to
 # be the artwork that drew it, not whatever a local SDK happens to hold.
@@ -134,21 +168,45 @@ until [ -e /tmp/fb/Xvfb_screen0 ]; do
   sleep 1
 done
 
-"$SDK_BIN/connectiq" >/tmp/simulator.log 2>&1 &
+port_open() { (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; }
 
-waited=0
-until (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; do
-  waited=$((waited + 1))
-  [ "$waited" -lt 120 ] || { cat /tmp/simulator.log >&2; \
-    fail "simulator did not open port $PORT within ${waited}s"; }
-  sleep 1
+# One simulator per build, each started fresh. A running simulator keeps the app's
+# settings in a .SET file and draws those rather than a new build's defaults, so
+# the file is removed and the simulator restarted between builds; a fresh
+# simulator is also what makes "the face is on screen" mean this build's face,
+# since it comes up showing no device at all. Each is started under setsid so the
+# whole of it -- the launcher script and what it runs -- can be stopped as a group.
+for i in $(seq 1 "$BUILDS"); do
+  if [ "$i" -gt 1 ]; then
+    until [ -e "$OUT/go-$i" ]; do sleep 0.5; done
+    kill -TERM -- "-$PUSH" "-$SIMULATOR" 2>/dev/null || true
+    waited=0
+    while port_open; do
+      waited=$((waited + 1))
+      [ "$waited" -lt 60 ] || fail "the simulator did not stop within ${waited}s"
+      sleep 1
+    done
+  fi
+  find /tmp /root -path '*/APPS/SETTINGS/*' -type f -delete 2>/dev/null || true
+
+  setsid "$SDK_BIN/connectiq" >/tmp/simulator.log 2>&1 &
+  SIMULATOR=$!
+
+  waited=0
+  until port_open; do
+    waited=$((waited + 1))
+    [ "$waited" -lt 120 ] || { cat /tmp/simulator.log >&2; \
+      fail "simulator did not open port $PORT within ${waited}s"; }
+    sleep 1
+  done
+  echo "shots: simulator ready after ${waited}s"
+
+  setsid "$SDK_BIN/monkeydo" "/tmp/shots-$i.prg" "$PRODUCT" >/tmp/monkeydo.log 2>&1 &
+  PUSH=$!
+
+  echo "ready $i" > "$OUT/status"
+  echo "shots: build $i pushed, holding the simulator open"
 done
-echo "shots: simulator ready after ${waited}s"
-
-"$SDK_BIN/monkeydo" "$PRG" "$PRODUCT" >/tmp/monkeydo.log 2>&1 &
-
-echo ready > "$OUT/status"
-echo "shots: app pushed, holding the simulator open"
 # monkeydo never returns while the app runs, and the caller decides when enough
 # frames have been taken, so this waits to be torn down rather than exiting.
 tail -f /dev/null
@@ -193,11 +251,15 @@ def _clear_previous_run(work_directory: str) -> None:
     """
     for name in os.listdir(work_directory):
         path = os.path.join(work_directory, name)
-        if name in (STATUS_NAME, PROBE_NAME) or (
-            name.startswith(FRAME_PREFIX + "-") and name.endswith(".xwd")
+        if (
+            name in (STATUS_NAME, PROBE_NAME)
+            or name.startswith(GO_PREFIX + "-")
+            or (name.startswith(FRAME_PREFIX + "-") and name.endswith(".xwd"))
         ):
             os.remove(path)
-        elif name == DEVICE_SUBDIRECTORY and os.path.isdir(path):
+        elif name in (DEVICE_SUBDIRECTORY, VARIANTS_SUBDIRECTORY) and os.path.isdir(
+            path
+        ):
             shutil.rmtree(path)
 
 
@@ -247,12 +309,56 @@ def run_simulator(
     """
     Runs the simulator in a container and returns the framebuffer dumps it wrote.
 
+    One build; `run_builds` does the work.
+    """
+    return run_builds(
+        project=project,
+        product=product,
+        work_directory=work_directory,
+        builds=[Build(jungle=jungle)],
+        count=count,
+        interval=interval,
+        settle=settle,
+        image=image,
+        prg=prg,
+        screen=screen,
+        platform=platform,
+        timezone=timezone,
+        timeout=timeout,
+        ready_timeout=ready_timeout,
+    )[0]
+
+
+def run_builds(
+    project: str,
+    product: str,
+    work_directory: str,
+    builds: Sequence[Build],
+    count: int = DEFAULT_COUNT,
+    interval: float = DEFAULT_INTERVAL,
+    settle: float = DEFAULT_SETTLE,
+    image: str = DEFAULT_IMAGE,
+    prg: Optional[str] = None,
+    screen: str = DEFAULT_SCREEN,
+    platform: Optional[str] = None,
+    timezone: Optional[str] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    ready_timeout: int = DEFAULT_READY_TIMEOUT,
+) -> List[List[str]]:
+    """
+    Captures each build in turn, in one container, and returns each one's dumps.
+
     ``work_directory`` is bind-mounted into the container and receives the frames
     and a copy of the device definition that drew them.
 
-    ``jungle`` is what ``monkeyc -f`` takes: one file, or several separated by ``;``
-    with later files overriding earlier ones. Every one of them must exist in the
-    project, and that is checked before Docker is touched.
+    A build's ``jungle`` is what ``monkeyc -f`` takes: one file, or several
+    separated by ``;`` with later files overriding earlier ones. Every one of them
+    must exist in the project, and that is checked before Docker is touched.
+
+    Every build is compiled before the first capture, and the simulator is
+    restarted between builds rather than the container: the container's start and
+    the image's first compile are the slow part, and a fresh simulator is what
+    makes each build draw its own defaults.
 
     Frames are taken once the pushed app is on screen, which is waited for rather
     than assumed: the simulator comes up showing no device at all, and how long
@@ -264,6 +370,10 @@ def run_simulator(
     # whether or not Docker happens to be running, and reporting it as a Docker
     # problem sends them after the wrong thing.
     _check_timings(count, interval, settle, timeout, ready_timeout)
+    if not builds:
+        raise ShotsError("nothing to build")
+    if prg is not None and (len(builds) > 1 or builds[0].files):
+        raise ShotsError("a prebuilt .prg cannot be varied; build from the project")
 
     if not docker_available():
         raise ShotsError(
@@ -278,30 +388,34 @@ def run_simulator(
     # Only when something is going to be built: a prebuilt .prg is compiled
     # already, and a directory holding one need not be a project at all.
     if prg is None:
-        names = _jungle_files(jungle)
-        if not names:
-            raise ShotsError("no jungle file to build; jungle is empty")
-        for name in names:
-            if not os.path.isfile(os.path.join(project, name)):
-                raise ShotsError(
-                    f"{project} has no {name}; is it a Connect IQ project?"
-                )
+        for build in builds:
+            names = _jungle_files(build.jungle)
+            if not names:
+                raise ShotsError("no jungle file to build; jungle is empty")
+            for name in names:
+                if not os.path.isfile(os.path.join(project, name)):
+                    raise ShotsError(
+                        f"{project} has no {name}; is it a Connect IQ project?"
+                    )
 
     work_directory = os.path.abspath(os.path.expanduser(work_directory))
     os.makedirs(work_directory, exist_ok=True)
     _clear_previous_run(work_directory)
+    _write_variants(work_directory, builds)
 
     environment = {
         "SDK_BIN": "/connectiq/bin",
         "DEVICES": "/root/.Garmin/ConnectIQ/Devices",
         "PRODUCT": product,
-        "JUNGLE": jungle,
+        "BUILDS": str(len(builds)),
         "OUT": "/out",
         "SCREEN": f"{screen}x24",
         "SIM_DISPLAY": DEFAULT_DISPLAY,
         "PORT": str(DEFAULT_PORT),
         "HOME": "/root",
     }
+    for number, build in enumerate(builds, start=1):
+        environment[f"JUNGLE_{number}"] = build.jungle
     if prg is not None:
         environment["PRG"] = prg
     if timezone is not None:
@@ -326,7 +440,13 @@ def run_simulator(
         _SETUP_SCRIPT,
     ]
 
-    logger.info("Capturing %d frame(s) of %s in %s", count, product, image)
+    logger.info(
+        "Capturing %d frame(s) of %s, %d build(s), in %s",
+        count,
+        product,
+        len(builds),
+        image,
+    )
     logger.debug("docker command: %s", " ".join(command))
     started = subprocess.run(
         command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, text=True
@@ -336,11 +456,23 @@ def run_simulator(
     container = started.stdout.strip()
 
     try:
-        _await_ready(container, work_directory, product, timeout, ready_timeout)
-        if settle > 0:
-            logger.info("Letting the face run for %ss", settle)
-            time.sleep(settle)
-        return _grab_frames(container, work_directory, count, interval)
+        captured = []
+        for number, build in enumerate(builds, start=1):
+            if number > 1:
+                # The container holds each simulator open until told to move on.
+                _touch(os.path.join(work_directory, f"{GO_PREFIX}-{number}"))
+            _await_ready(
+                container, work_directory, product, timeout, ready_timeout, number
+            )
+            if len(builds) > 1:
+                logger.info("[build %d/%d] %s", number, len(builds), build.name)
+            if settle > 0:
+                logger.info("Letting the face run for %ss", settle)
+                time.sleep(settle)
+            captured.append(
+                _grab_frames(container, work_directory, count, interval, number)
+            )
+        return captured
     finally:
         logger.debug("removing container %s", container[:12])
         subprocess.run(
@@ -349,6 +481,31 @@ def run_simulator(
             stderr=subprocess.DEVNULL,
             check=False,
         )
+
+
+def _touch(path: str) -> None:
+    with open(path, "w", encoding="utf-8"):
+        pass
+
+
+def _write_variants(work_directory: str, builds: Sequence[Build]) -> None:
+    """
+    Writes each build's changed files where the container lays them over the project.
+
+    ``variants/<n>/<path>`` for build ``n``. Nothing is written for a build that
+    changes nothing, and with no such build at all the container compiles the
+    project where it is mounted, as a plain capture always has.
+    """
+    for number, build in enumerate(builds, start=1):
+        for relative, text in (build.files or {}).items():
+            target = os.path.normpath(
+                os.path.join(
+                    work_directory, VARIANTS_SUBDIRECTORY, str(number), relative
+                )
+            )
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as variant_file:
+                variant_file.write(text)
 
 
 def _container_log(container: str) -> str:
@@ -369,17 +526,19 @@ def _await_ready(
     product: str,
     build_timeout: int,
     ready_timeout: int,
+    number: int = 1,
 ) -> None:
     """
-    Waits for the build, then for the pushed app to reach the simulator's screen.
+    Waits for build ``number``'s simulator, then for its app to reach the screen.
 
     Two waits, because they fail for different reasons and on wildly different
     timescales: a build that takes minutes under emulation is normal, and a push
     that takes minutes is not.
     """
     status_path = os.path.join(work_directory, STATUS_NAME)
+    wanted = f"ready {number}"
     deadline = time.monotonic() + build_timeout
-    while not os.path.exists(status_path):
+    while _read_status(status_path) not in (wanted, "failed"):
         if time.monotonic() > deadline:
             raise ShotsError(
                 f"the container did not finish setting up within {build_timeout}s:\n"
@@ -391,12 +550,10 @@ def _await_ready(
             )
         time.sleep(READY_POLL_INTERVAL)
 
-    with open(status_path, "r", encoding="utf-8") as status_file:
-        if status_file.read().strip() != "ready":
-            raise ShotsError(
-                "the container could not start the simulator:\n"
-                + _container_log(container)
-            )
+    if _read_status(status_path) != wanted:
+        raise ShotsError(
+            "the container could not start the simulator:\n" + _container_log(container)
+        )
 
     device = DeviceRender(product, os.path.join(work_directory, DEVICE_SUBDIRECTORY))
     probe_path = os.path.join(work_directory, PROBE_NAME)
@@ -416,6 +573,15 @@ def _await_ready(
                 "the build runs:\n" + _container_log(container)
             )
         time.sleep(READY_POLL_INTERVAL)
+
+
+def _read_status(path: str) -> Optional[str]:
+    """What the container last reported, or None before it has said anything."""
+    try:
+        with open(path, "r", encoding="utf-8") as status_file:
+            return status_file.read().strip()
+    except FileNotFoundError:
+        return None
 
 
 def _container_running(container: str) -> bool:
@@ -449,12 +615,12 @@ def _grab(container: str, work_directory: str, path: str):
 
 
 def _grab_frames(
-    container: str, work_directory: str, count: int, interval: float
+    container: str, work_directory: str, count: int, interval: float, number: int = 1
 ) -> List[str]:
     """Copies `count` framebuffers out of the container, `interval` seconds apart."""
     frames = []
     for index in range(1, count + 1):
-        path = os.path.join(work_directory, f"frame-{index}.xwd")
+        path = os.path.join(work_directory, f"{FRAME_PREFIX}-{number}-{index}.xwd")
         _grab(container, work_directory, path)
         logger.info("[%d/%d] captured frame", index, count)
         frames.append(path)
@@ -574,3 +740,38 @@ def take_shots(
         output_directory=output_directory,
         prefix=prefix,
     )
+
+
+def take_builds(
+    project: str,
+    product: str,
+    output_directory: str,
+    work_directory: str,
+    builds: Sequence[Build],
+    prefix: str = "",
+    **options,
+) -> List[List[Shot]]:
+    """
+    Captures several builds in one container, and cuts each into its own directory.
+
+    Build ``b``'s images go to ``output_directory/b.name``. ``options`` are
+    `run_builds`' timings and container settings.
+    """
+    captured = run_builds(
+        project=project,
+        product=product,
+        work_directory=work_directory,
+        builds=builds,
+        **options,
+    )
+    devices_directory = os.path.join(work_directory, DEVICE_SUBDIRECTORY)
+    return [
+        cut_frames(
+            frames=frames,
+            product=product,
+            devices_directory=devices_directory,
+            output_directory=os.path.join(output_directory, build.name),
+            prefix=prefix,
+        )
+        for build, frames in zip(builds, captured)
+    ]

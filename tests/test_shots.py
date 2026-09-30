@@ -260,7 +260,7 @@ class TestRunSimulatorArguments:
             run_simulator(
                 str(project), "testwatch", str(tmp_path / "work"), jungle="pro.jungle"
             )
-        assert "JUNGLE=pro.jungle" in recorded["command"]
+        assert "JUNGLE_1=pro.jungle" in recorded["command"]
 
     def test_a_list_of_jungles_reaches_the_compiler_whole(self, tmp_path, monkeypatch):
         """monkeyc -f takes several files; the value is passed through as one string."""
@@ -281,7 +281,7 @@ class TestRunSimulatorArguments:
                 str(tmp_path / "work"),
                 jungle="monkey.jungle;capture.jungle",
             )
-        assert "JUNGLE=monkey.jungle;capture.jungle" in recorded["command"]
+        assert "JUNGLE_1=monkey.jungle;capture.jungle" in recorded["command"]
 
     def test_every_jungle_in_a_list_is_checked(self, tmp_path, monkeypatch):
         """The missing one is named, not the list: that is what the caller has to fix."""
