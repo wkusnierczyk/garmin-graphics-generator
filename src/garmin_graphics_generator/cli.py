@@ -21,6 +21,8 @@ from .shots import (
     ShotsError,
     take_shots,
 )
+from .survey import DEFAULT_SURVEY_COUNT, Scene, make_plan, parse_scene, run_survey
+from .variants import ALL_CAP, VariantsError, read_resources
 
 COMMANDS = ("hero", "icons", "shots")
 
@@ -193,8 +195,10 @@ def add_shots_arguments(parser: argparse.ArgumentParser):
         "-n",
         "--count",
         type=int,
-        default=DEFAULT_COUNT,
-        help=f"How many frames to capture (default: {DEFAULT_COUNT})",
+        help=(
+            f"How many frames to capture (default: {DEFAULT_COUNT}, or "
+            f"{DEFAULT_SURVEY_COUNT} per build when varying settings)"
+        ),
     )
     parser.add_argument(
         "-i",
@@ -277,7 +281,79 @@ def add_shots_arguments(parser: argparse.ArgumentParser):
         ),
     )
 
+    add_settings_arguments(parser)
     add_verbosity(parser)
+
+
+def add_settings_arguments(parser: argparse.ArgumentParser):
+    """Adds the arguments that capture a face across its settings."""
+    group = parser.add_argument_group(
+        "settings",
+        "Capture one build per combination of settings, and lay the frames out on "
+        "a labelled contact-sheet.png with an index.json. Any of these turns it on.",
+    )
+    strategy = group.add_mutually_exclusive_group()
+    strategy.add_argument(
+        "--sweep",
+        dest="strategy",
+        action="store_const",
+        const="sweep",
+        help="Vary one setting at a time, the others at their defaults (the default)",
+    )
+    strategy.add_argument(
+        "--grid",
+        nargs=2,
+        metavar=("ACROSS", "DOWN"),
+        help="Every pair of values of two settings, as columns by rows",
+    )
+    strategy.add_argument(
+        "--cases",
+        metavar="FILE",
+        help='A JSON list of combinations, e.g. [{"timeSize": "6"}, {}]',
+    )
+    strategy.add_argument(
+        "--all",
+        dest="strategy",
+        action="store_const",
+        const="all",
+        help=f"Every combination of the varied settings; refused above {ALL_CAP}",
+    )
+    group.add_argument(
+        "--force",
+        action="store_true",
+        help=f"Allow --all above {ALL_CAP} combinations",
+    )
+    group.add_argument(
+        "--vary",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="A property to vary; repeat for more. Default, with no --set "
+        "either: every list and boolean setting",
+    )
+    group.add_argument(
+        "--set",
+        dest="assignments",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE[,VALUE...]",
+        help="The values to try for a property, replacing those its setting lists",
+    )
+    group.add_argument(
+        "--resources",
+        action="append",
+        metavar="DIR",
+        help="A resource directory the build uses, relative to the project; repeat "
+        "for more (default: resources)",
+    )
+    group.add_argument(
+        "--scene",
+        action="append",
+        default=[],
+        metavar="NAME=JUNGLE",
+        help="Capture every combination with this jungle list, under NAME, e.g. "
+        "always-on='monkey.jungle;aod.jungle'; repeat for more; replaces --jungle",
+    )
 
 
 def print_about():
@@ -364,6 +440,71 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
     return 0
 
 
+def surveying(args) -> bool:
+    """Whether any settings argument was given, which makes this a survey."""
+    return bool(
+        args.strategy
+        or args.grid
+        or args.cases
+        or args.vary
+        or args.assignments
+        or args.scene
+        or args.resources
+        or args.force
+    )
+
+
+def run_survey_command(args, work_directory: str) -> int:
+    """Captures the face across its settings and writes the contact sheet."""
+    if args.prg:
+        raise VariantsError("--prg cannot be varied; the survey builds each variant")
+    if args.force and args.strategy != "all":
+        raise VariantsError("--force only lifts the cap on --all")
+    if args.grid:
+        strategy = "grid"
+    elif args.cases:
+        strategy = "cases"
+    else:
+        strategy = args.strategy or "sweep"
+    project = args.project_directory
+    resources = read_resources(project, args.resources or ["resources"])
+    plan = make_plan(
+        resources,
+        strategy=strategy,
+        vary=args.vary,
+        assignments=args.assignments,
+        grid=args.grid,
+        cases=args.cases,
+        force=args.force,
+    )
+    scenes = [parse_scene(text) for text in args.scene] or [Scene("", args.jungle)]
+    result = run_survey(
+        project=project,
+        product=args.device,
+        output_directory=args.output_directory,
+        work_directory=work_directory,
+        plan=plan,
+        resources=resources,
+        scenes=scenes,
+        force=args.force,
+        count=DEFAULT_SURVEY_COUNT if args.count is None else args.count,
+        interval=args.interval,
+        settle=args.settle,
+        image=args.image,
+        screen=args.screen,
+        platform=args.platform,
+        timezone=args.timezone,
+        timeout=args.timeout,
+        ready_timeout=args.ready_timeout,
+        prefix=args.prefix,
+    )
+    if not args.silent:
+        print(f"Captured {result.builds} build(s) of {args.device}:")
+        print(f"  {result.sheet_path}")
+        print(f"  {result.index_path}")
+    return 0
+
+
 def run_shots(args, parser: argparse.ArgumentParser) -> int:
     """Captures frames from the simulator running headlessly in a container."""
 
@@ -371,12 +512,14 @@ def run_shots(args, parser: argparse.ArgumentParser) -> int:
     # anything, and reach the caller here as a ShotsError like any other. One home
     # for the rules, rather than a copy that has to be kept in step.
     def capture(work_directory: str) -> int:
+        if surveying(args):
+            return run_survey_command(args, work_directory)
         shots = take_shots(
             project=args.project_directory,
             product=args.device,
             output_directory=args.output_directory,
             work_directory=work_directory,
-            count=args.count,
+            count=DEFAULT_COUNT if args.count is None else args.count,
             interval=args.interval,
             settle=args.settle,
             image=args.image,
@@ -467,7 +610,7 @@ def main(argv=None) -> int:
     if args.command == "shots":
         try:
             return run_shots(args, shots_parser)
-        except (ShotsError, CaptureError) as error:
+        except (ShotsError, CaptureError, VariantsError) as error:
             shots_parser.error(str(error))
 
     if args.command == "hero":
