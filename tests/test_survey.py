@@ -71,7 +71,20 @@ class TestParseScene:
             "aod", "monkey.jungle;aod.jungle"
         )
 
-    @pytest.mark.parametrize("text", ["aod", "=monkey.jungle", "aod=", "a/b=x"])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "aod",
+            "=monkey.jungle",
+            "aod=",
+            "a/b=x",
+            "a\\b=x",
+            "release/../../outside=x",
+            "..=x",
+            ".hidden=x",
+            "a b=x",
+        ],
+    )
     def test_malformed_scenes_are_rejected(self, text):
         with pytest.raises(VariantsError):
             survey.parse_scene(text)

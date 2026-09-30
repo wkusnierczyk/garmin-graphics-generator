@@ -294,3 +294,17 @@ class TestReviewFixes:
             for s in variants.choose_settings(resources, ["size", "size"], ["size=0,2"])
         ]
         assert keys == ["size"]
+
+
+def test_a_single_quoted_id_is_rewritten_in_its_own_style():
+    text = "<property id='size' type='number'>1</property>"
+    rewritten, found = variants.rewrite_defaults(text, {"size": "2"})
+    assert rewritten == "<property id='size' type='number'>2</property>"
+    assert found == ["size"]
+
+
+def test_mismatched_quotes_are_not_a_match():
+    _, found = variants.rewrite_defaults(
+        "<property id='size\">1</property>", {"size": "2"}
+    )
+    assert found == []

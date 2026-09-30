@@ -14,6 +14,7 @@ sheet has a block per scene, headed with its name.
 """
 import json
 import os
+import re
 import shutil
 from typing import Dict, List, NamedTuple, Optional, Sequence
 
@@ -25,6 +26,9 @@ INDEX_NAME = "index.json"
 # A survey captures one frame per combination unless asked for more: the sheet
 # shows the first, and every extra frame is more simulator time per build.
 DEFAULT_SURVEY_COUNT = 1
+
+
+_SCENE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class Scene(NamedTuple):
@@ -40,8 +44,13 @@ def parse_scene(text: str) -> Scene:
     name, jungle = name.strip(), jungle.strip()
     if not separator or not name or not jungle:
         raise variants.VariantsError(f"expected NAME=JUNGLE for a scene, not {text!r}")
-    if os.sep in name or name.startswith("."):
-        raise variants.VariantsError(f"a scene name is a directory name, not {name!r}")
+    # One path component on every platform: checked against a fixed alphabet
+    # rather than os.sep, which on Windows misses "/" -- a separator there too.
+    if not _SCENE_NAME.match(name):
+        raise variants.VariantsError(
+            f"a scene name is one directory name of letters, digits, '.', '_' and "
+            f"'-', starting with a letter or digit, not {name!r}"
+        )
     return Scene(name, jungle)
 
 

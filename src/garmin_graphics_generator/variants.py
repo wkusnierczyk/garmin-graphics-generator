@@ -490,7 +490,9 @@ def rewrite_defaults(text: str, values: Dict[str, str]) -> Tuple[str, List[str]]
     keys = "|".join(re.escape(key) for key in values)
     pattern = re.compile(
         r"<!--.*?-->"
-        r"|(?P<open><property\b[^>]*?\bid\s*=\s*\"(?P<key>" + keys + r")\"[^>]*>)"
+        r"|(?P<open><property\b[^>]*?\bid\s*=\s*(?P<quote>[\"'])(?P<key>"
+        + keys
+        + r")(?P=quote)[^>]*>)"
         r"(?P<value>[^<]*)(?P<close></property>)",
         re.DOTALL,
     )

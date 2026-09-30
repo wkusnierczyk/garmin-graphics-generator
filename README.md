@@ -207,7 +207,8 @@ file directly would save a build per combination, but its format is not document
 itself is never written to.
 
 **Scenes.** `--scene NAME=JUNGLE` captures every combination with that jungle list, under a heading
-of its own. A face that draws a separate always-on screen usually needs a build-time switch to show it
+of its own. `NAME` is also the scene's output directory, so it is one name of letters, digits, `.`,
+`_` and `-`, starting with a letter or digit. A face that draws a separate always-on screen usually needs a build-time switch to show it
 in the simulator, and a scene is how that switch is passed without this tool knowing any face's gating.
 Without `--scene`, `--jungle` is the one scene.
 
