@@ -177,7 +177,7 @@ def add_icons_arguments(parser: argparse.ArgumentParser):
         default=".",
         help=(
             "Watch face project directory; the manifest, jungle, icon root and "
-            "fallback icon paths are relative to it"
+            "fallback icon paths are relative to it, the renderer is not"
         ),
     )
     parser.add_argument(
@@ -202,21 +202,21 @@ def add_icons_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--jungle",
-        default=JUNGLE_NAME,
-        help=f"Jungle the mapping is spliced into (default: {JUNGLE_NAME})",
+        help=(
+            "The one jungle file the mapping is spliced into, not a build list as "
+            f"for shots (default: {JUNGLE_NAME}); give it with --icon-root"
+        ),
     )
     parser.add_argument(
         "--icon-root",
-        default="",
         help=(
-            "Directory holding the resources-icon-<size>/ directories, and the "
-            "prefix of their jungle entries (default: the project directory)"
+            "Directory holding the resources-icon-<size>/ directories (default: the "
+            "project directory); give it with --jungle"
         ),
     )
     fallback = parser.add_mutually_exclusive_group()
     fallback.add_argument(
         "--fallback-icon",
-        default=FALLBACK_ICON_PATH,
         metavar="PATH",
         help=(
             "Where to write the fallback icon, drawn at the largest size "
@@ -601,11 +601,18 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
         .set_project_directory(args.project_directory)
         .set_devices_directory(args.devices_directory)
         .set_fallback_icon(not args.no_fallback_icon)
-        .set_fallback_path(args.fallback_icon)
+        .set_fallback_path(args.fallback_icon or FALLBACK_ICON_PATH)
         .set_manifest(args.manifest)
-        .set_jungle(args.jungle)
-        .set_icon_root(args.icon_root)
+        .set_jungle(args.jungle or JUNGLE_NAME)
+        .set_icon_root(args.icon_root or "")
     )
+
+    # An edition is a jungle and an icon root together. Either one alone falls back
+    # to the shared default for the other, and generating then overwrites the shared
+    # edition's icons or its mapping.
+    edition = args.jungle is not None or args.icon_root is not None
+    if edition and (args.jungle is None or args.icon_root is None):
+        parser.error("--jungle and --icon-root are given together, or not at all")
 
     if args.table:
         sys.stdout.write(generator.table())
@@ -626,6 +633,11 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
 
     if not args.renderer:
         parser.error("-R/--renderer is required to generate icons")
+    # The default fallback path is the shared edition's.
+    if edition and args.fallback_icon is None and not args.no_fallback_icon:
+        parser.error(
+            "generating for an edition needs --fallback-icon PATH or --no-fallback-icon"
+        )
 
     generator.set_renderer(load_renderer(args.renderer))
     generator.generate_icons().write_mapping()
