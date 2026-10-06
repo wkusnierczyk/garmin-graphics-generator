@@ -383,14 +383,61 @@ def render(size):
 and points at it with `-R tools/icon.py`. `-R tools/icon.py:name` picks a differently named function,
 and `-R package.module:name` loads one from an installed module.
 
+### Editions
+
+A project that builds a second edition from the same tree, by layering an edition jungle last,
+
+```bash
+monkeyc -f "monkey.jungle;premium.jungle" ...
+```
+
+can give that edition its own icons. Point the command at the edition's manifest and jungle, and at a
+directory of its own for the icons:
+
+```bash
+garmin-graphics-generator icons -p ../my-watch-face -R ../my-watch-face/tools/premium_icon.py \
+    --manifest manifest-premium.xml --jungle premium.jungle --icon-root premium \
+    --fallback-icon premium/resources-base/drawables/launcher_icon.png
+```
+
+Every path but the renderer's is relative to `-p`; the renderer is found from the current directory.
+The icons go into `premium/resources-icon-<size>/`, and the mapping into `premium.jungle`:
+
+```
+venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70
+```
+
+monkeyc resolves a jungle's paths against the jungle's own directory, so that is what the entries are
+relative to: a `premium/premium.jungle` gets `;resources-icon-70`. A path with a space is written
+quoted, `;"premium edition/resources-icon-70"`, as the jungle syntax requires: unquoted, monkeyc reads
+a different path, and builds with the shared icon without a word.
+
+Because the edition jungle comes last, its entry comes after the shared one, and monkeyc takes the
+later `LauncherIcon`. A build that does not name the edition jungle never sees these icons.
+
+The fallback icon needs a `drawables.xml` declaring it in the same directory; that file is the
+project's, since it may declare other bitmaps, and the command writes only the image. It covers less
+than the shared one does: a product the shared jungle maps but the edition's does not yet gets the
+**shared** per-size icon, because the shared entry outranks any directory on the base resource path.
+The edition's `--check` reports that product as unmapped.
+
+`--jungle` and `--icon-root` go together, and generating for an edition needs `--fallback-icon PATH`
+or `--no-fallback-icon`. Either one alone would fall back to the shared default for the rest, and
+overwrite the shared edition's icons or mapping. For the same reason, the command refuses to replace a
+generated block that maps into a different directory than the one it was given, and checks every path
+before it writes anything. Each block's comment carries the command line that regenerates it.
+
+`--check` and `--table` take the same options, so each edition is checked on its own. A mapping entry
+pointing into another edition's directory does not count as a mapping for this one.
+
 ### Checking
 
-`--check` verifies that every product in `manifest.xml` has a mapping, that no mapping names a product
-outside it, that every icon is the size its directory promises, that each declares `LauncherIcon`,
-that no icon directory is left unmapped, and — when the SDK is installed — that every mapping matches
-the size the SDK declares for that device. It needs no SDK: the committed mapping is itself the
-device-to-size table, and the SDK is used only to cross-check it. Hook it into the watch face's own
-`Makefile` and it fails the build when the device list and the icons drift apart.
+`--check` verifies that the jungle exists, that every product in the manifest has a mapping, that no
+mapping names a product outside it, that every icon is the size its directory promises, that each
+declares `LauncherIcon`, that no icon directory is left unmapped, and — when the SDK is installed —
+that every mapping matches the size the SDK declares for that device. It needs no SDK: the committed
+mapping is itself the device-to-size table, and the SDK is used only to cross-check it. Hook it into
+the watch face's own `Makefile` and it fails the build when the device list and the icons drift apart.
 
 ## Installation
 
@@ -566,19 +613,30 @@ garmin-graphics-generator icons --help
 
 # Output
 usage: garmin-graphics-generator icons [-h] [-p PROJECT_DIRECTORY] [-d DEVICES_DIRECTORY] [-R RENDERER]
-                                       [--no-fallback-icon] [--check | --table] [-v | -q]
+                                       [--manifest MANIFEST] [--jungle JUNGLE] [--icon-root ICON_ROOT]
+                                       [--fallback-icon PATH | --no-fallback-icon] [--check | --table]
+                                       [-v | -q]
 
 options:
   -h, --help            show this help message and exit
   -p, --project-directory PROJECT_DIRECTORY
-                        Watch face project directory, the one holding manifest.xml
+                        Watch face project directory; the manifest, jungle, icon root and fallback icon
+                        paths are relative to it, the renderer is not
   -d, --devices-directory DEVICES_DIRECTORY
                         SDK directory holding one compiler.json per device
   -R, --renderer RENDERER
                         How to draw one icon: 'resample:<master.png>' to resample a master image, or
                         '<file>.py[:<name>]' / '<module>:<name>' for a callable taking the edge in
                         pixels and returning a square image of that size
-  --no-fallback-icon    Do not rewrite resources/drawables/launcher_icon.png
+  --manifest MANIFEST   Manifest the products are read from (default: manifest.xml)
+  --jungle JUNGLE       The one jungle file the mapping is spliced into, not a build list as for shots
+                        (default: monkey.jungle); give it with --icon-root
+  --icon-root ICON_ROOT
+                        Directory holding the resources-icon-<size>/ directories (default: the project
+                        directory); give it with --jungle
+  --fallback-icon PATH  Where to write the fallback icon, drawn at the largest size (default:
+                        resources/drawables/launcher_icon.png)
+  --no-fallback-icon    Do not write the fallback icon
   --check               Verify the committed icons and mapping; exit non-zero on a problem
   --table               Print the product to icon size table as markdown
   -v, --verbose         Enable verbose output

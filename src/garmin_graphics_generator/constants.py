@@ -17,6 +17,9 @@ MANIFEST_NAME = "manifest.xml"
 JUNGLE_NAME = "monkey.jungle"
 LAUNCHER_ICON_NAME = "launcher_icon.png"
 ICON_DIRECTORY_TEMPLATE = "resources-icon-{size}"
+# Drawn at the largest required size, for a product added to the manifest before the
+# icons are regenerated: the default resource path still resolves it.
+FALLBACK_ICON_PATH = "resources/drawables/" + LAUNCHER_ICON_NAME
 
 # The generated mapping is spliced between these, so a jungle can carry hand-written
 # entries of its own outside the block.

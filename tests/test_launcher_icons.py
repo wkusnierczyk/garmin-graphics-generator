@@ -1,15 +1,18 @@
 import json
 import os
+import shlex
 
 import pytest
 from PIL import Image
 
+from garmin_graphics_generator.cli import main
 from garmin_graphics_generator.constants import BEGIN_MARKER, END_MARKER
 from garmin_graphics_generator.launcher_icons import (
     LauncherIconError,
     LauncherIconGenerator,
     load_renderer,
     mapping_block,
+    mapping_pattern,
     read_png_size,
     resample_renderer,
     splice,
@@ -357,3 +360,431 @@ def test_table_from_the_committed_mapping(tmp_path):
     rendered = generator(project, devices).table()
     assert "| tiny" in rendered
     assert "38 x 38" in rendered
+
+
+# ------------------------------------------------------------------------ editions
+
+
+def make_edition(project):
+    """Adds a second edition to a project: its own manifest, and a jungle layered last."""
+    (project / "manifest-premium.xml").write_text(MANIFEST)
+    (project / "premium.jungle").write_text("project.manifest = manifest-premium.xml\n")
+    return project
+
+
+def edition(project, devices, renderer=None):
+    return (
+        generator(project, devices, renderer)
+        .set_manifest("manifest-premium.xml")
+        .set_jungle("premium.jungle")
+        .set_icon_root("premium")
+        .set_fallback_path("premium/resources-base/drawables/launcher_icon.png")
+    )
+
+
+def test_mapping_block_prefixes_the_icon_root():
+    block = mapping_block({"venu3": 70}, "premium")
+    assert (
+        "venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70" in block
+    )
+
+
+def test_mapping_pattern_reads_only_its_own_root():
+    shared = "venu3.resourcePath = $(venu3.resourcePath);resources-icon-70\n"
+    premium = "venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70\n"
+    assert mapping_pattern().findall(shared) == [("venu3", "70")]
+    assert mapping_pattern().findall(premium) == []
+    assert mapping_pattern("premium").findall(premium) == [("venu3", "70")]
+    assert mapping_pattern("premium").findall(shared) == []
+
+
+def test_icon_root_is_normalised(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).set_icon_root(
+        "./premium/"
+    ).generate_icons().write_mapping()
+    assert ";premium/resources-icon-70\n" in (project / "premium.jungle").read_text()
+
+
+def test_edition_writes_only_under_its_own_paths(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    jungle = (project / "monkey.jungle").read_text()
+    edition(project, devices).generate_icons().write_mapping()
+
+    assert read_png_size(
+        str(project / "premium/resources-icon-38/drawables/launcher_icon.png")
+    ) == (38, 38)
+    assert read_png_size(
+        str(project / "premium/resources-base/drawables/launcher_icon.png")
+    ) == (70, 70)
+    assert not any(name.startswith("resources-icon-") for name in os.listdir(project))
+    assert not (project / "resources").exists()
+    assert (project / "monkey.jungle").read_text() == jungle
+    assert (
+        "tiny.resourcePath = $(tiny.resourcePath);premium/resources-icon-38"
+        in (project / "premium.jungle").read_text()
+    )
+
+
+def test_edition_reads_products_from_its_own_manifest(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "manifest.xml").unlink()
+    assert edition(project, devices).resolve_sizes().sizes == SIZES
+
+
+def test_editions_coexist_and_check_independently(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    generator(project, devices).generate_icons().write_mapping()
+    edition(project, devices).generate_icons().write_mapping()
+
+    assert generator(project, devices).mapping() == SIZES
+    assert edition(project, devices).mapping() == SIZES
+    # Neither reports the other's icon directories as orphans.
+    assert all(passed for passed, _ in generator(project, devices).check())
+    assert all(passed for passed, _ in edition(project, devices).check())
+
+
+def test_edition_check_rejects_an_entry_into_the_shared_root(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    generator(project, devices).generate_icons().write_mapping()
+    edition(project, devices).generate_icons().write_mapping()
+    jungle = project / "premium.jungle"
+    jungle.write_text(
+        jungle.read_text().replace(
+            "$(tiny.resourcePath);premium/resources-icon-38",
+            "$(tiny.resourcePath);resources-icon-38",
+        )
+    )
+    failures = [
+        message for passed, message in edition(project, devices).check() if not passed
+    ]
+    assert any("tiny" in message for message in failures)
+
+
+def test_edition_check_names_an_orphan_by_its_root(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).generate_icons().write_mapping()
+    (project / "premium" / "resources-icon-99" / "drawables").mkdir(parents=True)
+    failures = [
+        message for passed, message in edition(project, devices).check() if not passed
+    ]
+    assert any("premium/resources-icon-99" in message for message in failures)
+
+
+def test_cli_targets_an_edition(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    module = tmp_path / "renderer.py"
+    module.write_text(
+        "from PIL import Image\n"
+        "def render(size):\n"
+        "    return Image.new('RGB', (size, size), 'gold')\n"
+    )
+    options = [
+        "icons",
+        "-p",
+        str(project),
+        "-d",
+        str(devices),
+        "--manifest",
+        "manifest-premium.xml",
+        "--jungle",
+        "premium.jungle",
+        "--icon-root",
+        "premium",
+    ]
+    assert main(options + ["-R", str(module), "--no-fallback-icon", "-q"]) == 0
+    assert (project / "premium/resources-icon-70/drawables/launcher_icon.png").exists()
+    assert not (project / "resources").exists()
+    assert main(options + ["--check", "-q"]) == 0
+
+
+def test_helpers_normalise_the_directory():
+    block = mapping_block({"venu3": 70}, "./premium/")
+    assert ";premium/resources-icon-70\n" in block
+    assert mapping_pattern("premium/").findall(block) == [("venu3", "70")]
+
+
+def test_the_default_block_names_the_plain_command(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    jungle = (project / "monkey.jungle").read_text()
+    assert "# Regenerate with: garmin-graphics-generator icons\n" in jungle
+
+
+def test_an_edition_block_names_the_command_that_regenerates_it(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).generate_icons().write_mapping()
+    assert (
+        "# Regenerate with: garmin-graphics-generator icons"
+        " --manifest manifest-premium.xml --jungle premium.jungle --icon-root premium"
+        " --fallback-icon premium/resources-base/drawables/launcher_icon.png\n"
+    ) in (project / "premium.jungle").read_text()
+
+
+def test_entries_are_relative_to_a_jungle_in_a_subdirectory(tmp_path):
+    # monkeyc resolves a jungle's resource paths against the jungle's own directory.
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "premium").mkdir()
+    (project / "premium.jungle").rename(project / "premium" / "premium.jungle")
+    premium = edition(project, devices).set_jungle("premium/premium.jungle")
+    premium.generate_icons().write_mapping()
+
+    jungle = (project / "premium" / "premium.jungle").read_text()
+    assert "tiny.resourcePath = $(tiny.resourcePath);resources-icon-38\n" in jungle
+    assert (project / "premium/resources-icon-38/drawables/launcher_icon.png").exists()
+    assert premium.mapping() == SIZES
+    assert all(passed for passed, _ in premium.check())
+
+
+def test_a_jungle_in_a_subdirectory_reaches_the_project_root(tmp_path):
+    project, devices = make_project(tmp_path)
+    (project / "sub").mkdir()
+    (project / "sub" / "icons.jungle").write_text("")
+    generator(project, devices).set_jungle("sub/icons.jungle").write_mapping()
+    jungle = (project / "sub" / "icons.jungle").read_text()
+    assert "tiny.resourcePath = $(tiny.resourcePath);../resources-icon-38\n" in jungle
+
+
+def test_an_absolute_icon_root_is_taken_as_it_is(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).set_icon_root(
+        str(project / "premium")
+    ).generate_icons().write_mapping()
+    assert (project / "premium/resources-icon-38/drawables/launcher_icon.png").exists()
+    assert ";premium/resources-icon-38\n" in (project / "premium.jungle").read_text()
+
+
+def test_generation_refuses_to_replace_another_roots_mapping(tmp_path):
+    # --icon-root given, --jungle forgotten: the shared block would be overwritten.
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    generator(project, devices).generate_icons().write_mapping()
+    shared = (project / "monkey.jungle").read_text()
+    forgetful = edition(project, devices).set_jungle("monkey.jungle")
+    with pytest.raises(LauncherIconError, match="would replace"):
+        forgetful.generate_icons()
+    assert not (project / "premium").exists()
+    assert (project / "monkey.jungle").read_text() == shared
+
+
+def test_a_build_list_as_the_jungle_fails_before_anything_is_written(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    premium = edition(project, devices).set_jungle("monkey.jungle;premium.jungle")
+    with pytest.raises(LauncherIconError, match="not a build list"):
+        premium.generate_icons()
+    assert not (project / "premium").exists()
+
+
+@pytest.mark.parametrize("fallback", ["premium/resources-base/drawables", ""])
+def test_a_fallback_that_is_not_a_png_fails_before_anything_is_written(
+    tmp_path, fallback
+):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "premium/resources-base/drawables").mkdir(parents=True)
+    premium = edition(project, devices).set_fallback_path(fallback)
+    with pytest.raises(LauncherIconError, match="not a .png file"):
+        premium.generate_icons()
+    assert not (project / "premium/resources-icon-70").exists()
+
+
+def test_check_names_a_missing_jungle(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    report = edition(project, devices).set_jungle("premuim.jungle").check()
+    assert len(report) == 1
+    assert not report[0][0]
+    assert "no jungle at" in report[0][1]
+
+
+def test_table_rejects_a_missing_jungle(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    with pytest.raises(LauncherIconError, match="no jungle at"):
+        edition(project, devices).set_jungle("premuim.jungle").table()
+
+
+def cli_edition(project, devices, *extra):
+    return [
+        "icons",
+        "-p",
+        str(project),
+        "-d",
+        str(devices),
+        "--manifest",
+        "manifest-premium.xml",
+        *extra,
+    ]
+
+
+def test_cli_writes_the_fallback_where_it_is_told(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    module = tmp_path / "renderer.py"
+    module.write_text(
+        "from PIL import Image\n"
+        "def render(size):\n"
+        "    return Image.new('RGB', (size, size), 'gold')\n"
+    )
+    options = cli_edition(
+        project, devices, "--jungle", "premium.jungle", "--icon-root", "premium"
+    )
+    fallback = "premium/resources-base/drawables/launcher_icon.png"
+    assert main(options + ["-R", str(module), "--fallback-icon", fallback, "-q"]) == 0
+    assert read_png_size(str(project / fallback)) == (70, 70)
+    assert not (project / "resources").exists()
+
+
+def test_cli_tabulates_an_edition(tmp_path, capsys):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).generate_icons().write_mapping()
+    options = cli_edition(
+        project, devices, "--jungle", "premium.jungle", "--icon-root", "premium"
+    )
+    assert main(options + ["--table"]) == 0
+    assert "| tiny" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--icon-root", "premium", "--no-fallback-icon"],
+        ["--jungle", "premium.jungle", "--no-fallback-icon"],
+        ["--jungle", "premium.jungle", "--icon-root", "premium"],
+        [
+            "--jungle",
+            "premium.jungle",
+            "--icon-root",
+            "premium",
+            "--no-fallback-icon",
+            "--fallback-icon",
+            "x.png",
+        ],
+    ],
+    ids=["root-alone", "jungle-alone", "no-fallback-choice", "both-fallbacks"],
+)
+def test_cli_refuses_an_incomplete_edition(tmp_path, extra):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    with pytest.raises(SystemExit) as raised:
+        main(cli_edition(project, devices, "-R", "resample:x.png", *extra))
+    assert raised.value.code == 2
+    assert not (project / "premium").exists()
+
+
+def test_an_icon_root_with_a_space_is_quoted_and_read_back(tmp_path):
+    # Unquoted, monkeyc reads a different path and builds with the shared icon.
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    premium = edition(project, devices).set_icon_root("premium edition")
+    premium.generate_icons().write_mapping()
+    jungle = (project / "premium.jungle").read_text()
+    assert (
+        'tiny.resourcePath = $(tiny.resourcePath);"premium edition/resources-icon-38"\n'
+        in jungle
+    )
+    assert premium.mapping() == SIZES
+    assert all(passed for passed, _ in premium.check())
+    # and regenerating over its own quoted block is not refused as foreign
+    premium.generate_icons().write_mapping()
+
+
+def test_an_unquoted_entry_with_a_space_is_not_a_mapping():
+    entry = (
+        "venu3.resourcePath = $(venu3.resourcePath);premium edition/resources-icon-70\n"
+    )
+    assert mapping_pattern("premium edition").findall(entry) == []
+
+
+def test_an_icon_root_a_jungle_cannot_hold_is_refused(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    with pytest.raises(LauncherIconError, match="cannot hold"):
+        edition(project, devices).set_icon_root('pre"mium').generate_icons()
+
+
+def test_generation_refuses_a_block_mixing_roots(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    jungle = project / "premium.jungle"
+    jungle.write_text(
+        splice(jungle.read_text(), mapping_block({"venu3": 70}, "premium")).replace(
+            "venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70\n",
+            "venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70\n"
+            "tiny.resourcePath = $(tiny.resourcePath);resources-icon-38\n",
+        )
+    )
+    before = jungle.read_text()
+    with pytest.raises(LauncherIconError, match="would replace"):
+        edition(project, devices).generate_icons()
+    assert jungle.read_text() == before
+
+
+def test_a_file_where_the_icon_root_goes_fails_before_anything_is_written(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "premium").write_text("not a directory")
+    premium = edition(project, devices).set_fallback_path("fallback/launcher_icon.png")
+    with pytest.raises(LauncherIconError, match="is a file"):
+        premium.generate_icons()
+    assert not (project / "fallback").exists()
+
+
+def test_a_file_where_the_fallback_goes_fails_before_anything_is_written(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "premium").mkdir()
+    (project / "premium" / "resources-base").write_text("not a directory")
+    with pytest.raises(LauncherIconError, match="is a file"):
+        edition(project, devices).generate_icons()
+    assert not (project / "premium" / "resources-icon-70").exists()
+
+
+def test_the_recorded_command_reruns_for_a_jungle_in_a_subdirectory(tmp_path):
+    project, devices = make_project(tmp_path)
+    (project / "sub").mkdir()
+    (project / "sub" / "icons.jungle").write_text("")
+    generator(project, devices).set_jungle(
+        "sub/icons.jungle"
+    ).generate_icons().write_mapping()
+    jungle = (project / "sub" / "icons.jungle").read_text()
+    command = next(
+        line.split("Regenerate with: ", 1)[1]
+        for line in jungle.splitlines()
+        if "Regenerate with" in line
+    )
+    assert command == (
+        "garmin-graphics-generator icons --jungle sub/icons.jungle --icon-root ."
+        " --fallback-icon resources/drawables/launcher_icon.png"
+    )
+    words = shlex.split(command)[1:]
+    module = tmp_path / "renderer.py"
+    module.write_text(
+        "from PIL import Image\n"
+        "def render(size):\n"
+        "    return Image.new('RGB', (size, size), 'green')\n"
+    )
+    rerun = words + ["-p", str(project), "-d", str(devices), "-R", str(module), "-q"]
+    assert main(rerun) == 0
+    assert (project / "sub" / "icons.jungle").read_text() == jungle
+
+
+def test_the_recorded_command_quotes_a_path_with_a_space(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).set_icon_root(
+        "premium edition"
+    ).generate_icons().write_mapping()
+    assert "--icon-root 'premium edition'" in (project / "premium.jungle").read_text()
