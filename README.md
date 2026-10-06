@@ -706,7 +706,7 @@ pip install .
 garmin-graphics-generator --about
 
 garmin-graphics-generator: A CLI tool for watch face imagery: simulator screenshots, hero images and launcher icons
-├─ version:   0.6.0
+├─ version:   0.7.0
 ├─ developer: mailto:waclaw.kusnierczyk@gmail.com
 ├─ source:    https://github.com/wkusnierczyk/garmin_graphics_generator
 └─ licence:   MIT https://opensource.org/licenses/MIT
