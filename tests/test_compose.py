@@ -459,6 +459,7 @@ class TestCompose:
         )
         assert [(c.name, c.passed) for c in result.checks] == [
             ("size", True),
+            ("resolution", True),
             ("file-size", False),
         ]
 
@@ -608,3 +609,310 @@ class TestCli:
                 ]
                 + captures(tmp_path)
             )
+
+
+class TestReviewFixes:
+    def test_a_key_with_a_line_break_is_refused_without_echoing_it(self, tmp_path):
+        path = tmp_path / "key"
+        path.write_text("# my gemini key\nAIzaSECRET123\n")
+        with pytest.raises(ComposeError) as caught:
+            read_key(str(path))
+        assert "SECRET" not in str(caught.value)
+        with pytest.raises(ComposeError):
+            read_key(environ={"GEMINI_API_KEY": "two words"})
+
+    def test_http_post_puts_the_key_in_the_header_only(self, monkeypatch):
+        seen = {}
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def answer(request, timeout, context):
+            seen["url"] = request.full_url
+            seen["header"] = request.get_header("X-goog-api-key")
+            seen["body"] = request.data
+            return Response(b'{"ok": true}')
+
+        monkeypatch.setattr(compose.urllib.request, "urlopen", answer)
+        assert compose.http_post("https://example.invalid/m", {"a": 1}, KEY) == {
+            "ok": True
+        }
+        assert seen["header"] == KEY
+        assert KEY not in seen["url"] and KEY.encode() not in seen["body"]
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            TimeoutError("timed out"),
+            ConnectionResetError(),
+            compose.http.client.IncompleteRead(b""),
+        ],
+    )
+    def test_a_dropped_connection_is_a_retryable_api_error(self, monkeypatch, failure):
+        def drop(request, timeout, context):
+            raise failure
+
+        monkeypatch.setattr(compose.urllib.request, "urlopen", drop)
+        with pytest.raises(ApiError) as caught:
+            compose.http_post("https://example.invalid/m", {}, KEY)
+        assert caught.value.status == 0 and not caught.value.fatal
+
+    def test_a_timeout_mid_run_is_retried_and_the_run_goes_on(self, tmp_path):
+        gemini, transport, sleeps = client(
+            image_response(),
+            screen_response(GOOD),
+            ApiError(0, "connection failed: timed out"),
+            image_response(),
+            screen_response(GOOD),
+        )
+        results = compose.compose(
+            request_for(tmp_path, generate=True, candidates=2), gemini, CLOCK
+        )
+        assert [r.accepted for r in results] == [True, True]
+        assert sleeps == [5]
+
+    def test_an_unrecoverable_error_stops_generation(self, tmp_path):
+        gemini, transport, _ = client(ApiError(403, "forbidden"))
+        results = compose.compose(
+            request_for(tmp_path, generate=True, candidates=4), gemini, CLOCK
+        )
+        assert len(results) == 1 and len(transport.requests) == 1
+        assert results[0].sidecar.endswith("candidate-01-failed.json")
+
+    def test_an_unrecoverable_screening_error_skips_screening_for_the_rest(
+        self, tmp_path
+    ):
+        source = write_png(tmp_path / "gemini.png", (2520, 1080))
+        gemini, transport, _ = client(ApiError(402, "depleted"))
+        results = compose.compose(
+            request_for(tmp_path, sources=[source, source, source]), gemini, CLOCK
+        )
+        assert len(transport.requests) == 1
+        assert [r.accepted for r in results] == [False, False, False]
+        assert results[2].checks[-1].detail.startswith("skipped:")
+        assert len(list((tmp_path / "out").glob("candidate-0?-rejected.png"))) == 3
+
+    def test_a_broken_hand_made_candidate_stops_the_run_before_any_call(self, tmp_path):
+        good = write_png(tmp_path / "good.png", (2520, 1080))
+        broken = tmp_path / "broken.png"
+        broken.write_bytes(b"\x89PNG not really")
+        gemini, transport, _ = client()
+        with pytest.raises(ComposeError, match="broken.png: not a readable image"):
+            compose.compose(
+                request_for(tmp_path, sources=[good, str(broken)]), gemini, CLOCK
+            )
+        assert transport.requests == []
+        assert not (tmp_path / "out").exists() or not list((tmp_path / "out").iterdir())
+
+    def test_a_broken_generated_image_is_kept_and_the_run_goes_on(self, tmp_path):
+        broken = image_response(b"not an image")
+        gemini, _, _ = client(broken, image_response(), screen_response(GOOD))
+        results = compose.compose(
+            request_for(tmp_path, generate=True, candidates=2), gemini, CLOCK
+        )
+        assert [r.accepted for r in results] == [False, True]
+        out = tmp_path / "out"
+        assert (
+            out / "candidate-01-failed-original.png"
+        ).read_bytes() == b"not an image"
+        assert (
+            "cannot size"
+            in json.loads((out / "candidate-01-failed.json").read_text())["error"]
+        )
+
+    def test_an_enlarged_candidate_is_rejected(self, tmp_path):
+        source = write_png(tmp_path / "small.png", (1024, 1024))
+        [result] = compose.compose(
+            request_for(tmp_path, sources=[source], screen_model=None), None, CLOCK
+        )
+        check = [c for c in result.checks if c.name == "resolution"][0]
+        assert (
+            not check.passed
+            and "1024x512" in check.detail
+            and "enlarged" in check.detail
+        )
+        assert json.loads(open(result.sidecar).read())["cropped_size"] == "1024x512"
+
+    @pytest.mark.parametrize("image_format", ["png", "jpg"])
+    @pytest.mark.parametrize("mode", ["RGBA", "P", "CMYK", "L", "LA", "1"])
+    def test_every_mode_is_written_opaque(self, tmp_path, mode, image_format):
+        image = Image.new("RGBA", (2520, 1080), (0, 0, 0, 0))
+        image.paste((255, 0, 0, 255), (1000, 400, 1500, 700))
+        image = image.convert(mode)
+        extension = "jpg" if mode == "CMYK" else "png"
+        path = tmp_path / f"source.{extension}"
+        image.save(path)
+        [result] = compose.compose(
+            request_for(
+                tmp_path,
+                sources=[str(path)],
+                screen_model=None,
+                image_format=image_format,
+            ),
+            None,
+            CLOCK,
+        )
+        written = Image.open(result.paths[0])
+        assert written.size == (1440, 720)
+        assert written.mode == "RGB"
+
+    def test_transparency_becomes_the_prompt_background(self, tmp_path):
+        path = tmp_path / "clear.png"
+        Image.new("RGBA", (2520, 1080), (0, 0, 0, 0)).save(path)
+        [result] = compose.compose(
+            request_for(tmp_path, sources=[str(path)], screen_model=None), None, CLOCK
+        )
+        assert Image.open(result.paths[0]).getpixel((10, 10)) == (255, 255, 255)
+
+    def test_the_colour_profile_is_kept(self, tmp_path):
+        from PIL import ImageCms
+
+        profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        path = tmp_path / "p3.png"
+        Image.new("RGB", (2520, 1080)).save(path, icc_profile=profile)
+        [result] = compose.compose(
+            request_for(tmp_path, sources=[str(path)], screen_model=None), None, CLOCK
+        )
+        assert Image.open(result.paths[0]).info.get("icc_profile") == profile
+
+    def test_the_original_is_named_by_its_content(self, tmp_path):
+        path = tmp_path / "really-a-png.jpg"
+        path.write_bytes(png_bytes())
+        [result] = compose.compose(
+            request_for(tmp_path, sources=[str(path)], screen_model=None), None, CLOCK
+        )
+        assert (tmp_path / "out" / "candidate-01-original.png").exists()
+
+    def test_extra_sizes_are_named_by_size(self, tmp_path):
+        source = write_png(tmp_path / "g.png", (2520, 1080))
+        [result] = compose.compose(
+            request_for(
+                tmp_path,
+                sources=[source],
+                screen_model=None,
+                sizes=[(1440, 720), (900, 450), (300, 150)],
+            ),
+            None,
+            CLOCK,
+        )
+        assert [p.rsplit("/", 1)[1] for p in result.paths] == [
+            "candidate-01.png",
+            "candidate-01-900x450.png",
+            "candidate-01-300x150.png",
+        ]
+
+    def test_numbering_skips_unrelated_files_and_counts_failures(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "candidate-07-failed.json").write_text("{}")
+        (out / "notes-99.txt").write_text("")
+        (out / "candidates-50.png").write_text("")
+        assert compose.next_index(str(out)) == 8
+
+    def test_the_builtins_cannot_be_overridden(self, tmp_path):
+        with pytest.raises(ComposeError, match="count cannot be set"):
+            compose.prompt_for(request_for(tmp_path, variables={"count": "4"}))
+
+    def test_checks_need_a_screening_model(self, tmp_path):
+        source = write_png(tmp_path / "g.png", (2520, 1080))
+        with pytest.raises(ComposeError, match="screening model"):
+            compose.compose(
+                request_for(
+                    tmp_path,
+                    sources=[source],
+                    screen_model=None,
+                    truths=[Truth("a", "q", True)],
+                ),
+                None,
+            )
+
+    def test_an_output_path_that_is_a_file_is_an_error(self, tmp_path):
+        source = write_png(tmp_path / "g.png", (2520, 1080))
+        (tmp_path / "out").write_text("")
+        with pytest.raises(ComposeError, match="output directory"):
+            compose.compose(
+                request_for(tmp_path, sources=[source], screen_model=None), None
+            )
+
+    def test_a_boolean_count_does_not_pass(self):
+        [check] = model_checks({"watch_count": True, "case_cut_off": False}, 1, [])[:1]
+        assert not check.passed
+
+
+class TestCliValidation:
+    def prompt(self, tmp_path):
+        path = tmp_path / "prompt.txt"
+        path.write_text("x $light")
+        return str(path)
+
+    @pytest.mark.parametrize("flags", [["-g", "0"], ["-g", "-3"], ["--max-kb", "-1"]])
+    def test_counts_are_checked_before_anything_runs(
+        self, tmp_path, flags, monkeypatch
+    ):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        with pytest.raises(SystemExit):
+            cli.main(
+                ["compose", "-p", self.prompt(tmp_path), "-o", str(tmp_path / "o")]
+                + flags
+                + captures(tmp_path)
+            )
+
+    def test_checks_with_no_screen_is_refused(self, tmp_path):
+        source = write_png(tmp_path / "g.png", (2520, 1080))
+        checks = tmp_path / "checks.json"
+        checks.write_text('[{"name": "a", "question": "q"}]')
+        with pytest.raises(SystemExit):
+            cli.main(
+                [
+                    "compose",
+                    "-p",
+                    self.prompt(tmp_path),
+                    "-o",
+                    str(tmp_path / "o"),
+                    "--var",
+                    "light=a",
+                    "--no-screen",
+                    "--checks",
+                    str(checks),
+                    "-c",
+                    source,
+                ]
+                + captures(tmp_path)
+            )
+
+    @pytest.mark.parametrize("value", ["true", "null", "[1]", '{"a": 1}'])
+    def test_vars_take_strings_and_numbers_only(self, tmp_path, value):
+        values = tmp_path / "vars.json"
+        values.write_text('{"light": %s}' % value)
+        with pytest.raises(SystemExit):
+            cli.main(
+                [
+                    "compose",
+                    "-p",
+                    self.prompt(tmp_path),
+                    "--print-prompt",
+                    "--vars",
+                    str(values),
+                ]
+                + captures(tmp_path)
+            )
+
+    def test_a_number_var_reads_as_written(self, tmp_path, capsys):
+        values = tmp_path / "vars.json"
+        values.write_text('{"light": 2.5}')
+        cli.main(
+            [
+                "compose",
+                "-p",
+                self.prompt(tmp_path),
+                "--print-prompt",
+                "--vars",
+                str(values),
+            ]
+            + captures(tmp_path)
+        )
+        assert capsys.readouterr().out == "x 2.5"

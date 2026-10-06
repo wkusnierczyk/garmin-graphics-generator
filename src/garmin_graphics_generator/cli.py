@@ -63,6 +63,23 @@ def parse_dimensions(dim_str: str) -> tuple:
         ) from exc
 
 
+def counted(minimum: int):
+    """An argparse type for a whole number of at least ``minimum``."""
+
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            value = None
+        if value is None or value < minimum:
+            raise argparse.ArgumentTypeError(
+                f"expected a whole number of at least {minimum}, got {text}"
+            )
+        return value
+
+    return parse
+
+
 def setup_logging(verbose: bool, silent: bool):
     """
     Configures the root logger to print to stderr.
@@ -410,7 +427,7 @@ def add_compose_arguments(parser: argparse.ArgumentParser):
     source.add_argument(
         "-g",
         "--generate",
-        type=int,
+        type=counted(1),
         metavar="N",
         help="Generate N candidates through the API instead. Paid: image "
         "generation has no free tier",
@@ -445,7 +462,7 @@ def add_compose_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--max-kb",
-        type=int,
+        type=counted(0),
         default=DEFAULT_MAX_KB,
         help=f"Reject a candidate whose first size is larger; 0 for no limit "
         f"(default: {DEFAULT_MAX_KB}, the Connect IQ hero limit)",
@@ -691,7 +708,14 @@ def compose_variables(args) -> dict:
             raise ComposeError(f"cannot read {args.vars}: {error}") from error
         if not isinstance(loaded, dict):
             raise ComposeError(f"{args.vars}: expected a JSON object")
-        variables.update({key: str(value) for key, value in loaded.items()})
+        for key, value in loaded.items():
+            # A number reads in the prompt as written; true, null or a list would
+            # come out as Python's spelling of it, which the template never meant.
+            if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                raise ComposeError(
+                    f"{args.vars}: {key} must be a string or a number, got {value!r}"
+                )
+            variables[key] = str(value)
     for assignment in args.assignments:
         name, equals, value = assignment.partition("=")
         if not equals or not name:
@@ -731,6 +755,8 @@ def run_compose(args, parser: argparse.ArgumentParser) -> int:
         parser.error("give -c/--candidate images, or --generate N, or --print-prompt")
     if not args.output_directory:
         parser.error("the following arguments are required: -o/--output-directory")
+    if args.checks and args.no_screen:
+        parser.error("--checks are put to the screening model, which --no-screen skips")
     if args.reference and args.generate is None:
         parser.error("--reference is sent to the image model, so needs --generate")
 

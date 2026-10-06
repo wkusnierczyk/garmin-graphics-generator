@@ -24,6 +24,7 @@ overwrites a file, so a published hero is put in place by hand.
 """
 import base64
 import hashlib
+import http.client
 import io
 import json
 import logging
@@ -37,7 +38,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,12 @@ MIME_TYPES = {
     ".webp": "image/webp",
 }
 EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+PILLOW_EXTENSIONS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp"}
+# What a flattened candidate shows where it was transparent: the prompt's background.
+FLATTEN_BACKGROUND = (255, 255, 255)
+# A Gemini key is printable ASCII with no spaces. Anything else would fail as an HTTP
+# header with the key quoted in the error, so it is refused here without echoing it.
+KEY_PATTERN = re.compile(r"[\x21-\x7e]+")
 
 NUMBER_WORDS = (
     "zero one two three four five six seven eight nine ten eleven twelve thirteen "
@@ -96,14 +103,26 @@ CANDIDATE = re.compile(r"^candidate-(\d+)\b")
 class ComposeError(Exception):
     """A problem with the inputs, the key or the model's answer."""
 
+    # Whether the next call would fail the same way; see ApiError.
+    fatal = False
+
 
 class ApiError(ComposeError):
     """The API refused a request."""
 
-    def __init__(self, status: int, message: str, retry_delay: Optional[float] = None):
-        super().__init__(f"HTTP {status}: {message}")
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        retry_delay: Optional[float] = None,
+        fatal: bool = False,
+    ):
+        super().__init__(f"HTTP {status}: {message}" if status else message)
         self.status = status
         self.retry_delay = retry_delay
+        # Fatal: the next call would fail the same way -- billing, the key, a bad
+        # request -- so a run stops rather than repeating it for every candidate.
+        self.fatal = fatal or (400 <= status < 500 and status != 429)
 
 
 class Check(NamedTuple):
@@ -158,10 +177,19 @@ def read_key(key_file: Optional[str] = None, environ=None) -> str:
             ) from error
         if not key:
             raise ComposeError(f"the key file {key_file} is empty")
-        return key
+        return _checked_key(key, f"the key file {key_file}")
     key = (os.environ if environ is None else environ).get(KEY_VARIABLE, "").strip()
     if not key:
         raise ComposeError(f"no API key: set {KEY_VARIABLE} or pass --key-file")
+    return _checked_key(key, KEY_VARIABLE)
+
+
+def _checked_key(key: str, origin: str) -> str:
+    if not KEY_PATTERN.fullmatch(key):
+        raise ComposeError(
+            f"{origin} does not hold just a key: it has spaces, line breaks or "
+            "characters outside printable ASCII"
+        )
     return key
 
 
@@ -283,6 +311,15 @@ def http_post(url: str, body: dict, key: str) -> dict:
         raise ApiError(error.code, message.replace(key, "<key>"), delay) from None
     except urllib.error.URLError as error:
         raise ComposeError(f"cannot reach the API: {error.reason}") from None
+    except (OSError, http.client.HTTPException) as error:
+        # A timeout or a dropped connection while waiting for the answer, which is
+        # where a slow generation spends its time. Status 0: retried, not fatal.
+        message = str(error) or type(error).__name__
+        raise ApiError(
+            0, f"connection failed: {message}".replace(key, "<key>")
+        ) from None
+    except ValueError as error:
+        raise ApiError(0, f"the answer is not JSON: {error}") from None
 
 
 def _api_error(raw: str) -> Tuple[str, Optional[float]]:
@@ -347,6 +384,7 @@ class Gemini:
                         f"{model} has no quota for this key. Image generation is not "
                         "on the free tier: enable billing on the key's Google Cloud "
                         "project.",
+                        fatal=True,
                     ) from None
                 if error.status == 402:
                     raise ApiError(
@@ -355,7 +393,7 @@ class Gemini:
                         "Studio, or screen without a model (--no-screen).",
                     ) from None
                 if attempt >= self._retries or not (
-                    error.status == 429 or error.status >= 500
+                    error.status in (0, 429) or error.status >= 500
                 ):
                     raise
                 delay = min(
@@ -495,6 +533,37 @@ class Gemini:
             ) from error
 
 
+def flatten(image: Image.Image) -> Image.Image:
+    """
+    The image upright and opaque RGB, its colour profile kept.
+
+    A store hero must not be transparent; a palette image would be resized
+    nearest-neighbour; and a phone photo's EXIF orientation is otherwise ignored.
+    """
+    profile = image.info.get("icc_profile")
+    image = ImageOps.exif_transpose(image)
+    if image.mode in ("RGBA", "LA", "PA") or (
+        image.mode == "P" and "transparency" in image.info
+    ):
+        rgba = image.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, FLATTEN_BACKGROUND)
+        flat.paste(rgba, mask=rgba.getchannel("A"))
+        image = flat
+    elif image.mode != "RGB":
+        image = image.convert("RGB")
+    if profile:
+        image.info["icc_profile"] = profile
+    return image
+
+
+def crop_size(size: Tuple[int, int], width: int, height: int) -> Tuple[int, int]:
+    """The largest region of the target ratio that fits in ``size``."""
+    source_width, source_height = size
+    if source_width * height > source_height * width:
+        return round(source_height * width / height), source_height
+    return source_width, round(source_width * height / width)
+
+
 def fit(image: Image.Image, width: int, height: int) -> Image.Image:
     """Crops ``image`` to the target ratio about its centre, then resizes it exactly."""
     source_width, source_height = image.size
@@ -506,24 +575,36 @@ def fit(image: Image.Image, width: int, height: int) -> Image.Image:
         crop_height = round(source_width * height / width)
         top = (source_height - crop_height) // 2
         box = (0, top, source_width, top + crop_height)
-    return image.crop(box).resize((width, height), Image.Resampling.LANCZOS)
+    fitted = image.crop(box).resize((width, height), Image.Resampling.LANCZOS)
+    if "icc_profile" in image.info:
+        fitted.info["icc_profile"] = image.info["icc_profile"]
+    return fitted
 
 
 def encode(image: Image.Image, image_format: str) -> bytes:
     """The image as file bytes, in ``png`` or ``jpg``."""
     pillow_format, _ = FORMATS[image_format]
     buffer = io.BytesIO()
+    options = {"optimize": True}
+    if image.info.get("icc_profile"):
+        options["icc_profile"] = image.info["icc_profile"]
     if pillow_format == "JPEG":
-        image.convert("RGB").save(buffer, "JPEG", quality=92, optimize=True)
-    else:
-        image.save(buffer, "PNG", optimize=True)
+        options["quality"] = 92
+    image.save(buffer, pillow_format, **options)
     return buffer.getvalue()
 
 
 def local_checks(
-    data: bytes, size: Tuple[int, int], max_kb: Optional[int]
+    data: bytes,
+    size: Tuple[int, int],
+    max_kb: Optional[int],
+    cropped: Optional[Tuple[int, int]] = None,
 ) -> List[Check]:
-    """The checks that need no model: the exact size, and the file size."""
+    """
+    The checks that need no model: the exact size as written, the file size, and
+    whether the crop had at least as many pixels as the target, so the image was
+    not enlarged into softness.
+    """
     with Image.open(io.BytesIO(data)) as image:
         actual = image.size
     checks = [
@@ -533,6 +614,16 @@ def local_checks(
             f"{actual[0]}x{actual[1]}, want {size[0]}x{size[1]}",
         )
     ]
+    if cropped:
+        checks.append(
+            Check(
+                "resolution",
+                cropped[0] >= size[0],
+                f"cropped to {cropped[0]}x{cropped[1]}, "
+                + ("downscaled" if cropped[0] >= size[0] else "enlarged")
+                + f" to {size[0]}x{size[1]}",
+            )
+        )
     if max_kb:
         kilobytes = len(data) / 1024
         checks.append(
@@ -549,7 +640,10 @@ def model_checks(answer: dict, count: int, truths: Sequence[Truth]) -> List[Chec
     """The screening model's answer, judged against the input count and the truths."""
     checks = []
     seen = answer.get("watch_count")
-    checks.append(Check("watch-count", seen == count, f"{seen} seen, want {count}"))
+    counted = isinstance(seen, int) and not isinstance(seen, bool)
+    checks.append(
+        Check("watch-count", counted and seen == count, f"{seen} seen, want {count}")
+    )
     cut = answer.get("case_cut_off")
     checks.append(
         Check(
@@ -593,8 +687,14 @@ def next_index(directory: str) -> int:
 def _write_new(path: str, data: bytes):
     # "x" refuses an existing file: the never-overwrite promise does not rest on the
     # numbering alone.
-    with open(path, "xb") as stream:
-        stream.write(data)
+    try:
+        with open(path, "xb") as stream:
+            stream.write(data)
+    except FileExistsError:
+        raise ComposeError(
+            f"{path} appeared while this run was writing; is another run using "
+            "the same directory? Nothing was overwritten."
+        ) from None
 
 
 class Request(NamedTuple):
@@ -630,6 +730,13 @@ def prompt_for(request: Request) -> str:
         raise ComposeError("no output size")
     width, height = request.sizes[0]
     variables = builtin_variables(len(request.inputs), width, height)
+    # The built-ins are what screening judges against: a prompt asking for four
+    # watches while five are counted for would reject every candidate.
+    clashes = sorted(set(variables) & set(request.variables or {}))
+    if clashes:
+        raise ComposeError(
+            f"{', '.join(clashes)} cannot be set: they come from the inputs and -s"
+        )
     variables.update(request.variables or {})
     return render_prompt(request.prompt_template, variables)
 
@@ -640,6 +747,14 @@ def _read(path: str) -> bytes:
             return stream.read()
     except OSError as error:
         raise ComposeError(f"cannot read {path}: {error.strerror}") from error
+
+
+def _decodable(data: bytes, name: str):
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+    except (OSError, ValueError, Image.DecompressionBombError) as error:
+        raise ComposeError(f"{name}: not a readable image: {error}") from error
 
 
 def compose(  # pylint: disable=too-many-locals
@@ -654,6 +769,11 @@ def compose(  # pylint: disable=too-many-locals
     the source file), the prompt's hash, the parameters, the screening, and the time.
     Nothing existing is overwritten. ``client`` may be None only when nothing needs
     the API: no generation, and no screening model.
+
+    A candidate that fails -- no image, an unreadable one, a screening error -- is
+    recorded and the run goes on, except when the API says the next call would fail
+    the same way (billing, the key, a bad request): then generation stops, and
+    screening is skipped for the rest.
     """
     if request.generate == bool(request.sources):
         raise ComposeError("give candidate images, or ask to generate them; not both")
@@ -663,15 +783,29 @@ def compose(  # pylint: disable=too-many-locals
         raise ComposeError(f"unknown format {request.image_format}")
     if client is None and (request.generate or request.screen_model):
         raise ComposeError("an API client is needed to generate or to screen")
+    if request.truths and not request.screen_model:
+        raise ComposeError("the checks are put to the screening model, so need one")
     prompt = prompt_for(request)
     images = [(_read(path), _mime_type(path)) for path in request.inputs]
     reference = None
     if request.reference:
         reference = (_read(request.reference), _mime_type(request.reference))
+    # Every hand-made candidate is read before the first is screened, so a broken
+    # file stops the run before it has paid for anything.
+    supplied = []
     for path in request.sources:
+        raw = _read(path)
         _mime_type(path)
+        _decodable(raw, path)
+        supplied.append((path, raw))
     aspect_ratio = choose_aspect_ratio(*request.sizes[0])
-    os.makedirs(request.output_directory, exist_ok=True)
+    try:
+        os.makedirs(request.output_directory, exist_ok=True)
+    except OSError as error:
+        raise ComposeError(
+            f"cannot use {request.output_directory} as the output directory: "
+            f"{error.strerror}"
+        ) from error
 
     record = {
         "model": request.model if request.generate else None,
@@ -713,62 +847,87 @@ def compose(  # pylint: disable=too-many-locals
                 )
             except ComposeError as error:
                 yield None, None, {"error": str(error)}
+                if error.fatal:
+                    return
                 continue
             yield raw, mime_type, about
 
-    def supplied():
-        for path in request.sources:
-            raw = _read(path)
+    def handmade():
+        for path, raw in supplied:
             source = {"file": os.path.basename(path), "sha256": _sha256(raw)}
             yield raw, _mime_type(path), {"source": source}
 
     results = []
+    screening = {"stopped": None}
     index = next_index(request.output_directory)
-    for raw, mime_type, about in generated() if request.generate else supplied():
+    for raw, mime_type, about in generated() if request.generate else handmade():
         sidecar = dict(record, timestamp=clock().isoformat(timespec="seconds"))
         sidecar.update(about)
-        results.append(_finish(request, client, index, raw, mime_type, sidecar))
+        results.append(
+            _finish(request, client, index, raw, mime_type, sidecar, screening)
+        )
         index += 1
     return results
 
 
+def _failed(directory, stem, sidecar, raw=None, mime_type=None) -> Candidate:
+    """Records a candidate that has no image to screen, keeping any bytes it had."""
+    index = int(CANDIDATE.match(stem).group(1))
+    sidecar["accepted"] = False
+    files = []
+    if raw is not None:
+        original = f"{stem}-failed-original.{EXTENSIONS.get(mime_type, 'bin')}"
+        _write_new(os.path.join(directory, original), raw)
+        files.append(original)
+        sidecar["files"] = files
+    path = os.path.join(directory, f"{stem}-failed.json")
+    _write_new(path, _json(sidecar))
+    logger.warning("%s: %s", stem, sidecar["error"])
+    return Candidate(index, False, (), path, (), sidecar["error"])
+
+
 def _finish(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    request, client, index, raw, mime_type, sidecar
+    request, client, index, raw, mime_type, sidecar, screening
 ) -> Candidate:
     """Sizes, screens and writes one candidate, and its sidecar."""
     directory = request.output_directory
     stem = f"candidate-{index:02d}"
     if raw is None:
-        sidecar["accepted"] = False
-        path = os.path.join(directory, f"{stem}-failed.json")
-        _write_new(path, _json(sidecar))
-        logger.warning("%s: %s", stem, sidecar["error"])
-        return Candidate(index, False, (), path, (), sidecar["error"])
+        return _failed(directory, stem, sidecar)
 
     try:
         with Image.open(io.BytesIO(raw)) as original:
             original.load()
             sidecar["original_size"] = f"{original.size[0]}x{original.size[1]}"
-            outputs = [
-                encode(fit(original, w, h), request.image_format)
-                for w, h in request.sizes
-            ]
-    except OSError as error:
-        raise ComposeError(f"{stem}: not a readable image: {error}") from error
+            original_extension = PILLOW_EXTENSIONS.get(original.format)
+            flat = flatten(original)
+        cropped = crop_size(flat.size, *request.sizes[0])
+        sidecar["cropped_size"] = f"{cropped[0]}x{cropped[1]}"
+        outputs = [
+            encode(fit(flat, w, h), request.image_format) for w, h in request.sizes
+        ]
+    except (OSError, ValueError, Image.DecompressionBombError) as error:
+        sidecar["error"] = f"cannot size the image: {error}"
+        return _failed(directory, stem, sidecar, raw, mime_type)
 
-    checks = local_checks(outputs[0], request.sizes[0], request.max_kb)
+    checks = local_checks(outputs[0], request.sizes[0], request.max_kb, cropped)
     if request.screen_model:
-        try:
-            answer = client.read(
-                request.screen_model,
-                outputs[0],
-                "image/png" if request.image_format == "png" else "image/jpeg",
-                request.truths,
-            )
-            sidecar["screening"] = answer
-            checks += model_checks(answer, len(request.inputs), request.truths)
-        except ComposeError as error:
-            checks.append(Check("screening", False, str(error)))
+        if screening["stopped"]:
+            checks.append(Check("screening", False, f"skipped: {screening['stopped']}"))
+        else:
+            try:
+                answer = client.read(
+                    request.screen_model,
+                    outputs[0],
+                    "image/png" if request.image_format == "png" else "image/jpeg",
+                    request.truths,
+                )
+                sidecar["screening"] = answer
+                checks += model_checks(answer, len(request.inputs), request.truths)
+            except ComposeError as error:
+                checks.append(Check("screening", False, str(error)))
+                if error.fatal:
+                    screening["stopped"] = str(error)
     accepted = all(check.passed for check in checks)
     sidecar["checks"] = [check._asdict() for check in checks]
     sidecar["accepted"] = accepted
@@ -784,7 +943,8 @@ def _finish(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         for position, (w, h) in enumerate(request.sizes)
     ]
     original_path = os.path.join(
-        directory, f"{stem}-original.{EXTENSIONS.get(mime_type, 'bin')}"
+        directory,
+        f"{stem}-original." f"{original_extension or EXTENSIONS.get(mime_type, 'bin')}",
     )
     for path, data in zip(paths, outputs):
         _write_new(path, data)

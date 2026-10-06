@@ -269,17 +269,22 @@ It sends the prompt, every capture and an optional `--reference` image to `--mod
 (21:9 for a 2:1 hero; the API offers no 2:1) at `--image-size` (4K by default).
 
 **The prompt** is a template. `$count`, `$count_word`, `$width` and `$height` come from the inputs and
-the first `-s`; any other `$name` is passed with `--var name=value` or a `--vars` JSON file, and a
-placeholder with no value is an error rather than sent to the model as it is. Roll, pitch and yaw
+the first `-s`, and cannot be overridden, since screening counts against them; any other `$name` is
+passed with `--var name=value` or a `--vars` JSON object of strings and numbers, and a placeholder with
+no value is an error rather than sent to the model as it is. Roll, pitch and yaw
 limits, the light, overlap, and the face's screen truths are the project's to word: they live in its
 template, not here.
 
-**Sizing.** Each candidate is cropped about its centre to the target ratio, then resized to exactly
-each `-s` (1440x720 by default, which is what Connect IQ requires of a hero). Ask the model for clear
-space at the left and right edges, which is what the crop removes.
+**Sizing.** Each candidate is turned upright by its EXIF orientation, flattened onto white where it
+is transparent (a store hero must be opaque), cropped about its centre to the target ratio, and
+resized to exactly each `-s` (1440x720 by default, which is what Connect IQ requires of a hero). Its
+colour profile is kept. Ask the model for clear space at the left and right edges, which is what the
+crop removes.
 
 **Screening.** Each candidate is checked before you look at it:
 - its first size is exact, and its file is within `--max-kb` (2048 by default, the Connect IQ limit);
+- the crop had at least as many pixels across as the first size, so it was not enlarged: a
+  1024x1024 image from the app crops to 1024x512 and fails a 1440x720 hero;
 - a vision model (`--screen-model`, `gemini-3.8-flash` by default) counts the watch cases, which must
   equal the number of captures, and says whether any case is cut off by the edge;
 - the same call answers each yes/no question in `--checks`, a JSON list such as
@@ -291,7 +296,14 @@ space at the left and right edges, which is what the crop removes.
   ```
 
 This is one model checking another, so a pass narrows the field and does not replace looking.
-`--no-screen` runs only the size checks, and needs no key.
+`--no-screen` runs only the local checks, needs no key, and cannot be combined with `--checks`.
+
+**Failures.** Hand-made candidates are all read before the first is screened, so a broken file stops
+the run before it has paid for anything. A generated image that cannot be read is kept as
+`candidate-NN-failed-original.<ext>` beside its `-failed.json`, and the run goes on. Timeouts, dropped
+connections and server errors are retried. An error that the next call would repeat -- no quota, no
+credit, a refused key, a bad model name -- stops generation, and stops screening for the remaining
+candidates, which are rejected and say why.
 
 **Output.** Candidates are numbered on from the highest already in `-o`, so a rerun adds to the set and
 nothing is ever overwritten. Each is `candidate-NN.png`, one `candidate-NN-WxH.png` per further size,
