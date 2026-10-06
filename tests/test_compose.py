@@ -916,3 +916,19 @@ class TestCliValidation:
             + captures(tmp_path)
         )
         assert capsys.readouterr().out == "x 2.5"
+
+
+class TestCopilotReview:
+    def test_a_long_server_delay_is_not_cut_short(self):
+        gemini, transport, sleeps = client(ApiError(429, "slow down", 300.0))
+        with pytest.raises(ApiError, match="wait 300 s"):
+            gemini.generate("m", "p", [], "1:1", None)
+        assert sleeps == [] and len(transport.requests) == 1
+
+    @pytest.mark.parametrize("size", ["0x720", "1440x0", "-1440x720"])
+    def test_a_size_must_be_positive(self, tmp_path, size):
+        with pytest.raises(SystemExit):
+            cli.main(
+                ["compose", "-p", str(tmp_path / "p.txt"), "--print-prompt", "-s", size]
+                + captures(tmp_path)
+            )

@@ -56,11 +56,13 @@ def parse_dimensions(dim_str: str) -> tuple:
     """
     try:
         width, height = map(int, dim_str.lower().split("x"))
-        return width, height
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
             f"Dimensions must be in WxH format, got {dim_str}"
         ) from exc
+    if width < 1 or height < 1:
+        raise argparse.ArgumentTypeError(f"Dimensions must be positive, got {dim_str}")
+    return width, height
 
 
 def counted(minimum: int):

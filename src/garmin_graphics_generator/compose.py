@@ -396,10 +396,15 @@ class Gemini:
                     error.status in (0, 429) or error.status >= 500
                 ):
                     raise
-                delay = min(
-                    MAX_RETRY_DELAY,
-                    error.retry_delay if error.retry_delay else 5 * 2**attempt,
-                )
+                # The server's delay is honoured, never shortened: retrying early
+                # only earns another 429. Past the cap, waiting is not worth it.
+                if error.retry_delay and error.retry_delay > MAX_RETRY_DELAY:
+                    raise ApiError(
+                        error.status,
+                        f"{error} (the API asks to wait "
+                        f"{error.retry_delay:.0f} s; try again later)",
+                    ) from None
+                delay = error.retry_delay or 5 * 2**attempt
                 logger.warning("%s: %s; retrying in %.0f s", model, error, delay)
                 self._sleep(delay)
                 attempt += 1
