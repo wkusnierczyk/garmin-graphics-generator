@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 
 import pytest
 from PIL import Image
@@ -681,3 +682,109 @@ def test_cli_refuses_an_incomplete_edition(tmp_path, extra):
         main(cli_edition(project, devices, "-R", "resample:x.png", *extra))
     assert raised.value.code == 2
     assert not (project / "premium").exists()
+
+
+def test_an_icon_root_with_a_space_is_quoted_and_read_back(tmp_path):
+    # Unquoted, monkeyc reads a different path and builds with the shared icon.
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    premium = edition(project, devices).set_icon_root("premium edition")
+    premium.generate_icons().write_mapping()
+    jungle = (project / "premium.jungle").read_text()
+    assert (
+        'tiny.resourcePath = $(tiny.resourcePath);"premium edition/resources-icon-38"\n'
+        in jungle
+    )
+    assert premium.mapping() == SIZES
+    assert all(passed for passed, _ in premium.check())
+    # and regenerating over its own quoted block is not refused as foreign
+    premium.generate_icons().write_mapping()
+
+
+def test_an_unquoted_entry_with_a_space_is_not_a_mapping():
+    entry = (
+        "venu3.resourcePath = $(venu3.resourcePath);premium edition/resources-icon-70\n"
+    )
+    assert mapping_pattern("premium edition").findall(entry) == []
+
+
+def test_an_icon_root_a_jungle_cannot_hold_is_refused(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    with pytest.raises(LauncherIconError, match="cannot hold"):
+        edition(project, devices).set_icon_root('pre"mium').generate_icons()
+
+
+def test_generation_refuses_a_block_mixing_roots(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    jungle = project / "premium.jungle"
+    jungle.write_text(
+        splice(jungle.read_text(), mapping_block({"venu3": 70}, "premium")).replace(
+            "venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70\n",
+            "venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70\n"
+            "tiny.resourcePath = $(tiny.resourcePath);resources-icon-38\n",
+        )
+    )
+    before = jungle.read_text()
+    with pytest.raises(LauncherIconError, match="would replace"):
+        edition(project, devices).generate_icons()
+    assert jungle.read_text() == before
+
+
+def test_a_file_where_the_icon_root_goes_fails_before_anything_is_written(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "premium").write_text("not a directory")
+    premium = edition(project, devices).set_fallback_path("fallback/launcher_icon.png")
+    with pytest.raises(LauncherIconError, match="is a file"):
+        premium.generate_icons()
+    assert not (project / "fallback").exists()
+
+
+def test_a_file_where_the_fallback_goes_fails_before_anything_is_written(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "premium").mkdir()
+    (project / "premium" / "resources-base").write_text("not a directory")
+    with pytest.raises(LauncherIconError, match="is a file"):
+        edition(project, devices).generate_icons()
+    assert not (project / "premium" / "resources-icon-70").exists()
+
+
+def test_the_recorded_command_reruns_for_a_jungle_in_a_subdirectory(tmp_path):
+    project, devices = make_project(tmp_path)
+    (project / "sub").mkdir()
+    (project / "sub" / "icons.jungle").write_text("")
+    generator(project, devices).set_jungle(
+        "sub/icons.jungle"
+    ).generate_icons().write_mapping()
+    jungle = (project / "sub" / "icons.jungle").read_text()
+    command = next(
+        line.split("Regenerate with: ", 1)[1]
+        for line in jungle.splitlines()
+        if "Regenerate with" in line
+    )
+    assert command == (
+        "garmin-graphics-generator icons --jungle sub/icons.jungle --icon-root ."
+        " --fallback-icon resources/drawables/launcher_icon.png"
+    )
+    words = shlex.split(command)[1:]
+    module = tmp_path / "renderer.py"
+    module.write_text(
+        "from PIL import Image\n"
+        "def render(size):\n"
+        "    return Image.new('RGB', (size, size), 'green')\n"
+    )
+    rerun = words + ["-p", str(project), "-d", str(devices), "-R", str(module), "-q"]
+    assert main(rerun) == 0
+    assert (project / "sub" / "icons.jungle").read_text() == jungle
+
+
+def test_the_recorded_command_quotes_a_path_with_a_space(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).set_icon_root(
+        "premium edition"
+    ).generate_icons().write_mapping()
+    assert "--icon-root 'premium edition'" in (project / "premium.jungle").read_text()

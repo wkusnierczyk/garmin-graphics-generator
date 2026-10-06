@@ -408,7 +408,9 @@ venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70
 ```
 
 monkeyc resolves a jungle's paths against the jungle's own directory, so that is what the entries are
-relative to: a `premium/premium.jungle` gets `;resources-icon-70`.
+relative to: a `premium/premium.jungle` gets `;resources-icon-70`. A path with a space is written
+quoted, `;"premium edition/resources-icon-70"`, as the jungle syntax requires: unquoted, monkeyc reads
+a different path, and builds with the shared icon without a word.
 
 Because the edition jungle comes last, its entry comes after the shared one, and monkeyc takes the
 later `LauncherIcon`. A build that does not name the edition jungle never sees these icons.
