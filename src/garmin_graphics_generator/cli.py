@@ -26,7 +26,12 @@ from .compose import (
     read_key,
     read_truths,
 )
-from .constants import DEFAULT_DEVICES_DIRECTORY
+from .constants import (
+    DEFAULT_DEVICES_DIRECTORY,
+    FALLBACK_ICON_PATH,
+    JUNGLE_NAME,
+    MANIFEST_NAME,
+)
 from .launcher_icons import LauncherIconError, LauncherIconGenerator, load_renderer
 from .shots import (
     DEFAULT_COUNT,
@@ -170,7 +175,10 @@ def add_icons_arguments(parser: argparse.ArgumentParser):
         "-p",
         "--project-directory",
         default=".",
-        help="Watch face project directory, the one holding manifest.xml",
+        help=(
+            "Watch face project directory; the manifest, jungle, icon root and "
+            "fallback icon paths are relative to it"
+        ),
     )
     parser.add_argument(
         "-d",
@@ -188,9 +196,37 @@ def add_icons_arguments(parser: argparse.ArgumentParser):
         ),
     )
     parser.add_argument(
+        "--manifest",
+        default=MANIFEST_NAME,
+        help=f"Manifest the products are read from (default: {MANIFEST_NAME})",
+    )
+    parser.add_argument(
+        "--jungle",
+        default=JUNGLE_NAME,
+        help=f"Jungle the mapping is spliced into (default: {JUNGLE_NAME})",
+    )
+    parser.add_argument(
+        "--icon-root",
+        default="",
+        help=(
+            "Directory holding the resources-icon-<size>/ directories, and the "
+            "prefix of their jungle entries (default: the project directory)"
+        ),
+    )
+    fallback = parser.add_mutually_exclusive_group()
+    fallback.add_argument(
+        "--fallback-icon",
+        default=FALLBACK_ICON_PATH,
+        metavar="PATH",
+        help=(
+            "Where to write the fallback icon, drawn at the largest size "
+            f"(default: {FALLBACK_ICON_PATH})"
+        ),
+    )
+    fallback.add_argument(
         "--no-fallback-icon",
         action="store_true",
-        help="Do not rewrite resources/drawables/launcher_icon.png",
+        help="Do not write the fallback icon",
     )
 
     mode = parser.add_mutually_exclusive_group()
@@ -565,6 +601,10 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
         .set_project_directory(args.project_directory)
         .set_devices_directory(args.devices_directory)
         .set_fallback_icon(not args.no_fallback_icon)
+        .set_fallback_path(args.fallback_icon)
+        .set_manifest(args.manifest)
+        .set_jungle(args.jungle)
+        .set_icon_root(args.icon_root)
     )
 
     if args.table:

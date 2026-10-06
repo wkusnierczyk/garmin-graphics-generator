@@ -383,6 +383,37 @@ def render(size):
 and points at it with `-R tools/icon.py`. `-R tools/icon.py:name` picks a differently named function,
 and `-R package.module:name` loads one from an installed module.
 
+### Editions
+
+A project that builds a second edition from the same tree, by layering an edition jungle last,
+
+```bash
+monkeyc -f "monkey.jungle;premium.jungle" ...
+```
+
+can give that edition its own icons. Point the command at the edition's manifest and jungle, and at a
+directory of its own for the icons:
+
+```bash
+garmin-graphics-generator icons -p ../my-watch-face -R tools/premium_icon.py \
+    --manifest manifest-premium.xml --jungle premium.jungle --icon-root premium \
+    --fallback-icon premium/resources-base/drawables/launcher_icon.png
+```
+
+The icons go into `premium/resources-icon-<size>/`, and the mapping into `premium.jungle`, prefixed:
+
+```
+venu3.resourcePath = $(venu3.resourcePath);premium/resources-icon-70
+```
+
+Because the edition jungle comes last, its entry comes after the shared one, and monkeyc takes the
+later `LauncherIcon`. A build that does not name the edition jungle never sees these icons. The
+fallback icon needs a `drawables.xml` declaring it in the same directory; that file is the project's,
+since it may declare other bitmaps, and the command writes only the image.
+
+`--check` and `--table` take the same options, so each edition is checked on its own. A mapping entry
+pointing into another edition's directory does not count as a mapping for this one.
+
 ### Checking
 
 `--check` verifies that every product in `manifest.xml` has a mapping, that no mapping names a product
@@ -566,19 +597,29 @@ garmin-graphics-generator icons --help
 
 # Output
 usage: garmin-graphics-generator icons [-h] [-p PROJECT_DIRECTORY] [-d DEVICES_DIRECTORY] [-R RENDERER]
-                                       [--no-fallback-icon] [--check | --table] [-v | -q]
+                                       [--manifest MANIFEST] [--jungle JUNGLE] [--icon-root ICON_ROOT]
+                                       [--fallback-icon PATH | --no-fallback-icon] [--check | --table]
+                                       [-v | -q]
 
 options:
   -h, --help            show this help message and exit
   -p, --project-directory PROJECT_DIRECTORY
-                        Watch face project directory, the one holding manifest.xml
+                        Watch face project directory; the manifest, jungle, icon root and fallback icon
+                        paths are relative to it
   -d, --devices-directory DEVICES_DIRECTORY
                         SDK directory holding one compiler.json per device
   -R, --renderer RENDERER
                         How to draw one icon: 'resample:<master.png>' to resample a master image, or
                         '<file>.py[:<name>]' / '<module>:<name>' for a callable taking the edge in
                         pixels and returning a square image of that size
-  --no-fallback-icon    Do not rewrite resources/drawables/launcher_icon.png
+  --manifest MANIFEST   Manifest the products are read from (default: manifest.xml)
+  --jungle JUNGLE       Jungle the mapping is spliced into (default: monkey.jungle)
+  --icon-root ICON_ROOT
+                        Directory holding the resources-icon-<size>/ directories, and the prefix of
+                        their jungle entries (default: the project directory)
+  --fallback-icon PATH  Where to write the fallback icon, drawn at the largest size (default:
+                        resources/drawables/launcher_icon.png)
+  --no-fallback-icon    Do not write the fallback icon
   --check               Verify the committed icons and mapping; exit non-zero on a problem
   --table               Print the product to icon size table as markdown
   -v, --verbose         Enable verbose output
