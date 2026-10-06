@@ -6,6 +6,8 @@ It:
 * captures a watch face across its settings, as a labelled contact sheet;
 * removes white backgrounds from screenshots;
 * generates a composite "hero" pixel image with watch faces scattered randomly;
+* sizes and screens a hero composed by an image model (Gemini) from the captures, by hand or
+  through the API;
 * creates copies of input files resized to a common width;
 * generates a launcher icon for every size the supported devices ask for, and the jungle
   mapping that serves them.
@@ -34,6 +36,11 @@ Implementation language: Python.
 * **Hero image generation**  
   Creates a standard 1440x720 (configurable) composite image with randomized placement, rotation, and sizing.
   The default image size is expected for uploading to the Garmin Connect IQ Developer portal.
+* **Model-composed hero**  
+  Fills in a prompt template for an image model, then crops and resizes what the model made to the
+  exact store size, and screens it: watch count, cases inside the frame, the face's own screen
+  truths, and the file size limit. Rejected candidates are kept, marked. Generating through the API
+  is opt-in and paid; by default the images come from the Gemini app.
 * **Batch resizing**  
   Resizes the input images to a common width (200 pixels by default) for inclusion in a watch face `README.md` file.
 * **Per-device launcher icons**  
@@ -71,6 +78,9 @@ Yes, you can, and in most contexts that solution might be better and preferred.
 Sometimes, however, forcing an AI agent to fulfil your expectations proves difficult; for example, when you have several watch faces that look much alike, it may consistently fail to include all of them in the generated image, instead replicating only one of them.
 Another limitation is that of being able to upload only a limited number of input images (through the chat-based web interface, at least).
 The Garmin Graphics Generator does not aim at replacing any other solution you may find more useful, but rather complementing them in a niche selection of tasks.
+Where an image model is the better route, `compose` takes the parts of it that have to be done every
+time -- filling in the prompt, checking the count and the screens, cutting to the exact size -- and
+leaves the judgement to you; see [Composed hero](#composed-hero).
 
 ## Screenshots
 
@@ -229,6 +239,84 @@ times; `--timezone` fixes the zone, not the minute, and the simulator has no com
 fixed time. An animated face also draws differently in every frame. A setting across several devices is
 one run per device.
 
+## Composed hero
+
+A hero that reads as a product shot needs watches seen from several viewpoints, overlapping, under one
+light. `hero` cannot make that: a 2D transform has no pixels for a case's side wall, lugs or crown,
+and the face-on lighting is baked into each capture. An image model can, given the captures and a
+precise prompt. `compose` handles everything around that call.
+
+```bash
+# fill in the prompt, to paste into the Gemini app with the captures
+garmin-graphics-generator compose -p tools/hero-prompt.txt --print-prompt shots/watch-*.png
+
+# size and screen what Gemini made; a store hero and a README banner from each
+garmin-graphics-generator compose -p tools/hero-prompt.txt -o candidates/ \
+   --checks tools/hero-checks.json -s 1440x720 -s 900x450 \
+   -c ~/Downloads/gemini-1.png -c ~/Downloads/gemini-2.png shots/watch-*.png
+
+# or generate four candidates through the API -- paid, see below
+garmin-graphics-generator compose -p tools/hero-prompt.txt -o candidates/ \
+   --checks tools/hero-checks.json -g 4 shots/watch-*.png
+```
+
+**Hand-made or generated.** Image generation through the Gemini API has no free tier: on a key without
+billing, every image model answers with a quota of zero. Generating in the Gemini app is covered by a
+subscription. So the default is the app: `--print-prompt` writes the prompt, the images made from it
+come back with `-c`, and the command sizes and screens them. `-g N` makes the N calls itself instead.
+It sends the prompt, every capture and an optional `--reference` image to `--model`
+(`gemini-3-pro-image` by default), asking for the nearest aspect ratio at least as wide as the target
+(21:9 for a 2:1 hero; the API offers no 2:1) at `--image-size` (4K by default).
+
+**The prompt** is a template. `$count`, `$count_word`, `$width` and `$height` come from the inputs and
+the first `-s`, and cannot be overridden, since screening counts against them; any other `$name` is
+passed with `--var name=value` or a `--vars` JSON object of strings and numbers, and a placeholder with
+no value is an error rather than sent to the model as it is. Roll, pitch and yaw
+limits, the light, overlap, and the face's screen truths are the project's to word: they live in its
+template, not here.
+
+**Sizing.** Each candidate is turned upright by its EXIF orientation, flattened onto white where it
+is transparent (a store hero must be opaque), cropped about its centre to the target ratio, and
+resized to exactly each `-s` (1440x720 by default, which is what Connect IQ requires of a hero). Its
+colour profile is kept. Ask the model for clear space at the left and right edges, which is what the
+crop removes.
+
+**Screening.** Each candidate is checked before you look at it:
+- its first size is exact, and its file is within `--max-kb` (2048 by default, the Connect IQ limit);
+- the crop had at least as many pixels across as the first size, so it was not enlarged: a
+  1024x1024 image from the app crops to 1024x512 and fails a 1440x720 hero;
+- a vision model (`--screen-model`, `gemini-3.8-flash` by default) counts the watch cases, which must
+  equal the number of captures, and says whether any case is cut off by the edge;
+- the same call answers each yes/no question in `--checks`, a JSON list such as
+
+  ```json
+  [{"name": "numerals-in-rain",
+    "question": "Apart from the one time readout on each screen, does any screen show an Arabic numeral 0-9?",
+    "expect": false}]
+  ```
+
+This is one model checking another, so a pass narrows the field and does not replace looking.
+`--no-screen` runs only the local checks, needs no key, and cannot be combined with `--checks`.
+
+**Failures.** Hand-made candidates are all read before the first is screened, so a broken file stops
+the run before it has paid for anything. A generated image that cannot be read is kept as
+`candidate-NN-failed-original.<ext>` beside its `-failed.json`, and the run goes on. Timeouts, dropped
+connections and server errors are retried. An error that the next call would repeat -- no quota, no
+credit, a refused key, a bad model name -- stops generation, and stops screening for the remaining
+candidates, which are rejected and say why.
+
+**Output.** Candidates are numbered on from the highest already in `-o`, so a rerun adds to the set and
+nothing is ever overwritten. Each is `candidate-NN.png`, one `candidate-NN-WxH.png` per further size,
+`candidate-NN-original.<ext>` as it came from the model, and `candidate-NN.json`: the model and the
+version that served it (or the source file and its hash), the prompt's SHA-256, the parameters, every
+check with its result, and the time. A rejected candidate has `-rejected` in all its names; a call that
+returned no image leaves `candidate-NN-failed.json` saying why. The command exits 0 when at least one
+candidate was accepted. It never puts one in place: copying the chosen one over the published hero is
+yours to do.
+
+**The key** is read from `--key-file`, or else from `GEMINI_API_KEY`. It is sent in a header, never in
+a URL, and is never logged or written into a sidecar.
+
 ## Launcher icons
 
 Garmin sets the launcher icon size **per device**, not per resolution: it is `launcherIcon` in the
@@ -331,7 +419,7 @@ garmin-graphics-generator hero \
    my_watch_1.jpg my_watch_2.jpg
 ```
 
-The CLI has three commands, `shots`, `hero` and `icons`. An invocation naming none of them is treated
+The CLI has four commands, `shots`, `hero`, `compose` and `icons`. An invocation naming none of them is treated
 as `hero`, so the flat form the tool had before `icons` existed keeps working.
 
 For details about the available command line options, see `garmin-graphics-generator --help`, and
@@ -341,19 +429,20 @@ For details about the available command line options, see `garmin-graphics-gener
 garmin-graphics-generator --help
 
 # Output
-usage: garmin-graphics-generator [-h] [--about] {hero,icons,shots} ...
+usage: garmin-graphics-generator [-h] [--about] {hero,compose,icons,shots} ...
 
 Capture watch face screenshots, and generate hero images and per-device launcher icons.
 
 positional arguments:
-  {hero,icons,shots}
-    hero              Generate a hero image from watch face screenshots
-    icons             Generate per-device launcher icons and their jungle mapping
-    shots             Capture watch face screenshots from the simulator, headlessly
+  {hero,compose,icons,shots}
+    hero                Generate a hero image from watch face screenshots
+    compose             Size and screen hero candidates composed by an image model
+    icons               Generate per-device launcher icons and their jungle mapping
+    shots               Capture watch face screenshots from the simulator, headlessly
 
 options:
-  -h, --help          show this help message and exit
-  --about             Print tool information and exit
+  -h, --help            show this help message and exit
+  --about               Print tool information and exit
 ```
 
 ```bash
@@ -422,6 +511,54 @@ settings:
                         more (default: resources)
   --scene NAME=JUNGLE   Capture every combination with this jungle list, under NAME, e.g. always-
                         on='monkey.jungle;aod.jungle'; repeat for more; replaces --jungle
+```
+
+```bash
+garmin-graphics-generator compose --help
+
+# Output
+usage: garmin-graphics-generator compose [-h] -p FILE [-o OUTPUT_DIRECTORY] [--print-prompt |
+                                         -c FILE | -g N] [--var NAME=VALUE] [--vars FILE]
+                                         [--reference FILE] [-s WxH] [--max-kb MAX_KB]
+                                         [--format {jpg,png}] [--checks FILE] [--no-screen]
+                                         [--screen-model SCREEN_MODEL] [--model MODEL]
+                                         [--image-size {512px,1K,2K,4K,auto}] [--key-file FILE]
+                                         [-v | -q]
+                                         input_files [input_files ...]
+
+positional arguments:
+  input_files           The watch captures the hero is composed from, e.g. shots' watch-*.png
+
+options:
+  -h, --help            show this help message and exit
+  -p, --prompt FILE     Prompt template; $count, $count_word, $width and $height are filled in,
+                        and any other $name from --var
+  -o, --output-directory OUTPUT_DIRECTORY
+                        Where to write the candidates
+  --print-prompt        Print the filled-in prompt, to paste into the Gemini app, and stop
+  -c, --candidate FILE  An image generated by hand from the prompt; repeat for more
+  -g, --generate N      Generate N candidates through the API instead. Paid: image generation has
+                        no free tier
+  --var NAME=VALUE      A value for a $name in the prompt; repeat for more
+  --vars FILE           A JSON object of prompt values; --var overrides it
+  --reference FILE      With --generate: an image showing what the screens' glyphs look like
+  -s, --size WxH        Output size; repeat for more. The first is the one screened (default:
+                        1440x720)
+  --max-kb MAX_KB       Reject a candidate whose first size is larger; 0 for no limit (default:
+                        2048, the Connect IQ hero limit)
+  --format {jpg,png}    Output format
+  --checks FILE         The face's screen truths, a JSON list of {"name", "question", "expect"},
+                        put to the screening model as yes/no questions
+  --no-screen           Skip the screening model; only the size checks run, and no key is needed
+  --screen-model SCREEN_MODEL
+                        Model that screens each candidate (default: gemini-3.8-flash)
+  --model MODEL         Image model for --generate (default: gemini-3-pro-image)
+  --image-size {512px,1K,2K,4K,auto}
+                        Size to ask --generate's model for; auto leaves it to the model, for
+                        models that take no size (default: 4K)
+  --key-file FILE       File holding the API key (default: $GEMINI_API_KEY)
+  -v, --verbose         Enable verbose output
+  -q, --silent          Suppress all output except errors
 ```
 
 ```bash
