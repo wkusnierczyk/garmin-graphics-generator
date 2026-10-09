@@ -216,13 +216,14 @@ varies every list and boolean setting. A grid varies its two settings only, and 
 values from the file only: each refuses a `--vary` or `--set` it would otherwise ignore.
 
 **How a setting is applied.** By rewriting the property's default in a copy of the project inside the
-container, and building that. A fresh simulator has no settings file for the app, so it draws every
-property at the default its build declares. Before each build is pushed the simulator is
-stopped, the app's settings and storage under `/tmp/com.garmin.connectiq/GARMIN/APPS` are removed, and
-it is started again. On a desktop the simulator keeps an app's settings there between runs, and they
-would override a new build's defaults. In the tester image the settings directory has been found empty
-between builds -- nothing edits the settings there -- so the removal is a guard, not a step the capture
-depends on today. The restart is also what makes "the face is on screen" mean this build's face. Writing the simulator's settings
+container, and building that. Every build starts as a fresh install would: no settings, so every
+property is drawn at the default its build declares, and nothing in `Application.Storage`. Before
+each build is pushed the simulator is stopped, the app's settings and storage are removed, and it is
+started again. The simulator keeps both on disk between runs, as a watch does, under
+`/tmp/com.garmin.connectiq/GARMIN/APPS` in the tester image: the settings as `SETTINGS/<app>.SET`, the
+storage as `DATA/<app>.DAT` and `DATA/<app>.IDX`. Left in place, the settings override a new build's
+defaults and the storage carries one build's state into the next; a removal that fails stops the run.
+The restart is also what makes "the face is on screen" mean this build's face. Writing the simulator's settings
 file directly would save a build per combination, but its format is not documented. The project
 itself is never written to.
 
@@ -540,6 +541,35 @@ garmin-graphics-generator hero \
    my_watch_1.jpg my_watch_2.jpg
 ```
 
+How dense a hero comes out is two settings:
+
+* `--overlap` (`0..100`, default `0`) caps how much of one image another may cover, in percent of the
+  smaller of the two. It permits crowding but does not ask for it.
+* `--coverage` (`1..100`, default `60`) is the percentage of the canvas the images aim to fill
+  together. It sets the target size each image is shrunk to; an image is never enlarged. Each image
+  is sized as if it were square, so tall watch renders fill somewhat less than the figure says.
+
+A denser composition, with larger watches sitting closer, is asked for by raising both: the coverage
+to let the watches be drawn larger, and the overlap cap enough to let them fit. Raising only the
+overlap gives the same small watches, occasionally touching; raising only the coverage can ask for
+more than fits without overlap.
+
+Coverage only makes the watches larger while the inputs are larger than the target it sets: an input
+already smaller than the target is drawn at its own size, and raising the coverage further changes
+nothing. Watch renders from `shots` are large enough for that on a store hero with several watches.
+For watches genuinely bigger than an input allows, give larger input renders, or a smaller
+`--hero-file-size`.
+
+A coverage too high for the canvas is retried at shrinking sizes (twenty attempts, down to about a
+fifth of the target). If none of them seats every image, one more pass at the smallest size keeps
+what fits: a partial layout that **leaves images out**, with a warning naming how many were placed. Lower the coverage, or raise
+the overlap, when that warning appears.
+
+```bash
+# five watches, larger and closer than the defaults give
+garmin-graphics-generator hero -o ./output --coverage 85 --overlap 25 watch-*.png
+```
+
 The CLI has four commands, `shots`, `hero`, `compose` and `icons`. An invocation naming none of them is treated
 as `hero`, so the flat form the tool had before `icons` existed keeps working.
 
@@ -734,6 +764,8 @@ from garmin_graphics_generator import WatchHeroGenerator
     .set_input_paths(["watch1.jpg", "watch2.jpg"])
     .set_output_directory("./output")
     .set_variations(size_var=2, orientation_var=30)
+    .set_max_overlap(25)              # percent, 0..100
+    .set_coverage(85)                 # percent of the canvas, 1..100; default 60
     .prepare_output_directory()
     .process_input_images()
     .generate_hero_composition()

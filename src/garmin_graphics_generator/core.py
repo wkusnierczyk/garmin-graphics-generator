@@ -12,7 +12,13 @@ from typing import List, Optional, Tuple
 
 from PIL import Image
 
-from .constants import DEFAULT_CONFIG_PATH, EXTENSION_PNG, MODE_RGBA
+from .constants import (
+    DEFAULT_CONFIG_PATH,
+    EXTENSION_PNG,
+    MAX_COVERAGE,
+    MIN_COVERAGE,
+    MODE_RGBA,
+)
 
 # Load defaults from JSON to separate data from logic
 with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as _f:
@@ -109,6 +115,7 @@ class WatchHeroGenerator:
         self._size_variation: int = _DEFAULTS["size_variation"]
         self._orientation_variation: int = _DEFAULTS["orientation_variation"]
         self._max_overlap: int = _DEFAULTS["max_overlap"]
+        self._coverage: int = _DEFAULTS["coverage"]
 
         # Internal state
         self._processed_images: List[Image.Image] = []
@@ -160,6 +167,31 @@ class WatchHeroGenerator:
         Sets the allowed overlap percentage (0-100).
         """
         self._max_overlap = max(0, min(100, overlap_percent))
+        return self
+
+    def set_coverage(self, coverage_percent: int) -> "WatchHeroGenerator":
+        """
+        Sets the percentage of the canvas (1-100) the images aim to fill together.
+
+        It sets the target size an image is shrunk to, not where it goes. An image
+        is never enlarged, so raising this only draws the images larger while
+        they are larger than the target: an input already smaller stays as it
+        is. A denser composition raises this and raises the overlap cap enough
+        for the layout to succeed. Unlike the overlap cap it is not clamped,
+        since a value of 0 or past 100, or a non-integer, is a mistake rather
+        than an extreme.
+        """
+        # bool is an int subclass, and True would otherwise pass as 1.
+        if (
+            isinstance(coverage_percent, bool)
+            or not isinstance(coverage_percent, int)
+            or not MIN_COVERAGE <= coverage_percent <= MAX_COVERAGE
+        ):
+            raise ValueError(
+                f"coverage must be a whole percentage from {MIN_COVERAGE} to "
+                f"{MAX_COVERAGE}, got {coverage_percent!r}"
+            )
+        self._coverage = coverage_percent
         return self
 
     def prepare_output_directory(self) -> "WatchHeroGenerator":
@@ -303,7 +335,8 @@ class WatchHeroGenerator:
         layout = self._attempt_layout(scale, partial=True)
         logger.warning(
             "Could only place %d of %d images in %dx%d after %d attempts. "
-            "Try a larger --hero-file-size, a higher --overlap, or fewer images.",
+            "Try a larger --hero-file-size, a higher --overlap, a lower --coverage, "
+            "or fewer images.",
             len(layout),
             len(self._processed_images),
             *self._hero_size,
@@ -353,9 +386,12 @@ class WatchHeroGenerator:
         canvas_w, canvas_h = self._hero_size
         canvas_area = canvas_w * canvas_h
 
-        # Heuristic: Aim for total image area to cover roughly 60% of canvas
-        # to allow for spacing and rotation buffers.
-        target_total_area = canvas_area * 0.6
+        # Heuristic: aim for the total image area to cover the coverage target
+        # (60% by default) of the canvas, to allow for spacing and rotation buffers.
+        # The fraction is taken first because 60 / 100 evaluates to exactly the
+        # same double as the literal 0.6 used before, so the default reproduces
+        # the old layouts to the pixel.
+        target_total_area = canvas_area * (self._coverage / 100)
         target_area_per_image = target_total_area / num_images
 
         # We assume images are roughly square for this estimation
@@ -377,8 +413,10 @@ class WatchHeroGenerator:
         # Use chained comparison 0 < target < max
         if 0 < target_dim_heuristic < current_max:
             ratio = target_dim_heuristic / current_max
-            new_w = int(base_image.width * ratio)
-            new_h = int(base_image.height * ratio)
+            # At least 1px each way: a low coverage on a small canvas, shrunk
+            # further by the retries, can ask for a target below one pixel.
+            new_w = max(1, int(base_image.width * ratio))
+            new_h = max(1, int(base_image.height * ratio))
             base_image = base_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
         # 2. Apply random variations
