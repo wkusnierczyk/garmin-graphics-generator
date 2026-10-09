@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -561,6 +562,203 @@ class TestTimezoneInTheContainer:
                 timezone="Mars/Olympus",
             )
         assert started == []
+
+
+BASH = shutil.which("bash")
+
+
+def clear_app_state(apps, out, path=None):
+    """Runs the setup script's clear_app_state against ``apps``, as it is in the script."""
+    script = "set -eu -o pipefail\n" + shots._CLEAR_APP_STATE + "clear_app_state\n"
+    environment = {**os.environ, "SIM_APPS": str(apps), "OUT": str(out)}
+    if path is not None:
+        environment["PATH"] = path
+    return subprocess.run(
+        [BASH, "-c", script],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def make_apps(tmp_path):
+    """
+    The simulator's GARMIN/APPS as one build left it in #30: the settings and
+    storage files, the installed app, and the empty directories it made.
+    """
+    apps = tmp_path / "GARMIN" / "APPS"
+    files = [
+        "SETTINGS/SHOTS-1.SET",
+        "DATA/SHOTS-1.DAT",
+        "DATA/SHOTS-1.IDX",
+        "MEDIA/SHOTS-1.PRG",
+    ]
+    for name in files:
+        (apps / name).parent.mkdir(parents=True, exist_ok=True)
+        (apps / name).write_bytes(b"x")
+    (apps / "DATA" / "AUXFILE").mkdir()
+    (apps / "DATA/MEDIA/OBJSTORE/SHOTS-1/comp").mkdir(parents=True)
+    return apps
+
+
+def stub_find(tmp_path, otherwise):
+    """
+    A PATH whose find reports success for -delete and deletes nothing, as BSD find
+    does with a file it cannot remove, and runs ``otherwise`` for any other search.
+    """
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    stub = stubs / "find"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'for argument in "$@"; do [ "$argument" = -delete ] && exit 0; done\n'
+        f"{otherwise}\n"
+    )
+    stub.chmod(0o755)
+    return f"{stubs}{os.pathsep}{os.environ['PATH']}"
+
+
+def find_that_does_not_delete(tmp_path):
+    """The stub find, which is the real find for the look afterwards."""
+    return stub_find(tmp_path, f'exec "{shutil.which("find")}" "$@"')
+
+
+def find_that_cannot_look(tmp_path):
+    """The stub find, whose look afterwards fails and prints nothing."""
+    return stub_find(tmp_path, "echo 'find: Permission denied' >&2; exit 1")
+
+
+@pytest.mark.skipif(BASH is None, reason="needs bash")
+class TestClearAppState:
+    """Each build starts with no settings and no storage, as a fresh install does."""
+
+    def test_settings_and_storage_are_removed(self, tmp_path):
+        apps = make_apps(tmp_path)
+
+        cleared = clear_app_state(apps, tmp_path)
+
+        assert cleared.returncode == 0, cleared.stderr
+        assert not (apps / "SETTINGS" / "SHOTS-1.SET").exists()
+        assert not (apps / "DATA" / "SHOTS-1.DAT").exists()
+        assert not (apps / "DATA" / "SHOTS-1.IDX").exists()
+
+    def test_what_was_removed_is_listed(self, tmp_path):
+        apps = make_apps(tmp_path)
+
+        listed = clear_app_state(apps, tmp_path).stdout.split()
+
+        assert sorted(os.path.basename(name) for name in listed) == [
+            "SHOTS-1.DAT",
+            "SHOTS-1.IDX",
+            "SHOTS-1.SET",
+        ]
+
+    def test_the_simulators_layout_and_the_installed_app_are_kept(self, tmp_path):
+        apps = make_apps(tmp_path)
+
+        clear_app_state(apps, tmp_path)
+
+        assert (apps / "SETTINGS").is_dir()
+        assert (apps / "DATA" / "AUXFILE").is_dir()
+        assert (apps / "DATA/MEDIA/OBJSTORE/SHOTS-1/comp").is_dir()
+        assert (apps / "MEDIA" / "SHOTS-1.PRG").exists()
+
+    def test_nothing_to_clear_before_the_first_simulator(self, tmp_path):
+        cleared = clear_app_state(tmp_path / "GARMIN" / "APPS", tmp_path)
+        assert cleared.returncode == 0, cleared.stderr
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root deletes from a read-only directory",
+    )
+    def test_a_removal_that_fails_stops_the_run(self, tmp_path):
+        """The old removal failed on every run, and nothing said so."""
+        apps = make_apps(tmp_path)
+        (apps / "DATA").chmod(0o555)
+        try:
+            cleared = clear_app_state(apps, tmp_path)
+        finally:
+            (apps / "DATA").chmod(0o755)
+
+        assert cleared.returncode != 0
+        assert "could not clear" in cleared.stderr
+        assert (tmp_path / shots.STATUS_NAME).read_text().strip() == shots.CLEAR_FAILED
+
+    def test_a_find_that_fails_quietly_still_stops_the_run(self, tmp_path):
+        """BSD find exits 0 having deleted nothing; looking again is what notices."""
+        apps = make_apps(tmp_path)
+
+        cleared = clear_app_state(apps, tmp_path, find_that_does_not_delete(tmp_path))
+
+        assert (apps / "DATA" / "SHOTS-1.DAT").exists()
+        assert cleared.returncode != 0
+        assert "could not clear" in cleared.stderr
+        assert (tmp_path / shots.STATUS_NAME).read_text().strip() == shots.CLEAR_FAILED
+
+    def test_a_look_that_fails_is_not_taken_for_nothing_left(self, tmp_path):
+        """An empty listing from a find that failed proves nothing was removed."""
+        apps = make_apps(tmp_path)
+
+        cleared = clear_app_state(apps, tmp_path, find_that_cannot_look(tmp_path))
+
+        assert (apps / "DATA" / "SHOTS-1.DAT").exists()
+        assert cleared.returncode != 0
+        assert "could not clear" in cleared.stderr
+        assert (tmp_path / shots.STATUS_NAME).read_text().strip() == shots.CLEAR_FAILED
+
+    def test_files_below_data_are_removed_too(self, tmp_path):
+        """
+        #30 saw these directories empty; a fresh install has nothing in them either,
+        whatever the simulator may keep there for an app that fills them.
+        """
+        apps = make_apps(tmp_path)
+        nested = [
+            apps / "DATA/MEDIA/OBJSTORE/SHOTS-1/comp/0001",
+            apps / "DATA/AUXFILE/SHOTS-1.AUX",
+        ]
+        for path in nested:
+            path.write_bytes(b"x")
+
+        cleared = clear_app_state(apps, tmp_path)
+
+        assert cleared.returncode == 0, cleared.stderr
+        assert not any(path.exists() for path in nested)
+        assert (apps / "DATA/MEDIA/OBJSTORE/SHOTS-1/comp").is_dir()
+
+    def test_the_setup_script_clears_before_each_simulator_starts(self):
+        script = shots._SETUP_SCRIPT
+        loop = script.index('for i in $(seq 1 "$BUILDS"); do\n  if [ "$i" -gt 1 ]')
+        call = script.index("  clear_app_state\n", loop)
+        assert loop < call < script.index('setsid "$SDK_BIN/connectiq"')
+
+    def test_the_setup_script_is_valid_bash(self):
+        checked = subprocess.run(
+            [BASH, "-n", "-c", shots._SETUP_SCRIPT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        assert checked.returncode == 0, checked.stderr
+
+
+def test_a_failed_clearing_is_reported_as_itself(tmp_path, monkeypatch):
+    """Not as the simulator failing to start, which it never got to do."""
+    (tmp_path / shots.STATUS_NAME).write_text(shots.CLEAR_FAILED + "\n")
+    monkeypatch.setattr(
+        shots, "_container_log", lambda _c: "shots: could not clear the app's ..."
+    )
+
+    with pytest.raises(ShotsError) as raised:
+        shots._await_ready("c", str(tmp_path), "testwatch", 60, 60, 2)
+
+    message = str(raised.value)
+    assert message.startswith(
+        "could not clear the simulator's settings and storage before build 2:"
+    )
+    assert "could not start the simulator" not in message
 
 
 def test_docker_available_is_false_without_the_client(monkeypatch):

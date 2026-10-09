@@ -215,13 +215,14 @@ varies every list and boolean setting. A grid varies its two settings only, and 
 values from the file only: each refuses a `--vary` or `--set` it would otherwise ignore.
 
 **How a setting is applied.** By rewriting the property's default in a copy of the project inside the
-container, and building that. A fresh simulator has no settings file for the app, so it draws every
-property at the default its build declares. Before each build is pushed the simulator is
-stopped, the app's settings and storage under `/tmp/com.garmin.connectiq/GARMIN/APPS` are removed, and
-it is started again. On a desktop the simulator keeps an app's settings there between runs, and they
-would override a new build's defaults. In the tester image the settings directory has been found empty
-between builds -- nothing edits the settings there -- so the removal is a guard, not a step the capture
-depends on today. The restart is also what makes "the face is on screen" mean this build's face. Writing the simulator's settings
+container, and building that. Every build starts as a fresh install would: no settings, so every
+property is drawn at the default its build declares, and nothing in `Application.Storage`. Before
+each build is pushed the simulator is stopped, the app's settings and storage are removed, and it is
+started again. The simulator keeps both on disk between runs, as a watch does, under
+`/tmp/com.garmin.connectiq/GARMIN/APPS` in the tester image: the settings as `SETTINGS/<app>.SET`, the
+storage as `DATA/<app>.DAT` and `DATA/<app>.IDX`. Left in place, the settings override a new build's
+defaults and the storage carries one build's state into the next; a removal that fails stops the run.
+The restart is also what makes "the face is on screen" mean this build's face. Writing the simulator's settings
 file directly would save a build per combination, but its format is not documented. The project
 itself is never written to.
 
