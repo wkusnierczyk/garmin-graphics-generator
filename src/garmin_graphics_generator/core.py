@@ -388,8 +388,9 @@ class WatchHeroGenerator:
 
         # Heuristic: aim for the total image area to cover the coverage target
         # (60% by default) of the canvas, to allow for spacing and rotation buffers.
-        # The fraction is taken first: 60 / 100 is the very double the literal 0.6
-        # was, so the default reproduces the old layouts to the pixel.
+        # The fraction is taken first because 60 / 100 evaluates to exactly the
+        # same double as the literal 0.6 used before, so the default reproduces
+        # the old layouts to the pixel.
         target_total_area = canvas_area * (self._coverage / 100)
         target_area_per_image = target_total_area / num_images
 
@@ -412,8 +413,10 @@ class WatchHeroGenerator:
         # Use chained comparison 0 < target < max
         if 0 < target_dim_heuristic < current_max:
             ratio = target_dim_heuristic / current_max
-            new_w = int(base_image.width * ratio)
-            new_h = int(base_image.height * ratio)
+            # At least 1px each way: a low coverage on a small canvas, shrunk
+            # further by the retries, can ask for a target below one pixel.
+            new_w = max(1, int(base_image.width * ratio))
+            new_h = max(1, int(base_image.height * ratio))
             base_image = base_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
         # 2. Apply random variations

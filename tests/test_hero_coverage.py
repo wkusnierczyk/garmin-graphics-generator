@@ -151,3 +151,36 @@ class TestValidation:
         assert "--coverage" in error
         assert f"expected a whole number from 1 to 100, got {value}" in error
         assert not (tmp_path / "o").exists()
+
+
+class TestLowerBound:
+    """The lowest coverage on a small canvas asks for images under a pixel (PR #37)."""
+
+    def test_the_lowest_coverage_on_a_small_canvas_still_renders(self, tmp_path):
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        paths = write_inputs(inputs, 20)
+        out = tmp_path / "out"
+        random.seed(0)
+        status = cli.main(
+            [
+                "hero",
+                "-q",
+                "-o",
+                str(out),
+                "--hero-file-size",
+                "64x32",
+                "--coverage",
+                "1",
+            ]
+            + paths
+        )
+        assert status == 0
+        assert Image.open(out / "hero.png").size == (64, 32)
+
+    def test_a_sub_pixel_target_keeps_every_dimension_positive(self):
+        generator = WatchHeroGenerator().set_hero_size(64, 32)
+        image = Image.new("RGBA", INPUT_SIZE, (10, 10, 10, 255))
+        # pylint: disable=protected-access
+        prepared = generator._prepare_image_for_canvas(image, 1.01)
+        assert prepared.width >= 1 and prepared.height >= 1
