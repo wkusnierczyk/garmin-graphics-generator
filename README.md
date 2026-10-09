@@ -850,7 +850,7 @@ gh release edit vX.Y.Z --title 'vX.Y.Z <summary>' --notes-file notes.md --draft=
 garmin-graphics-generator --about
 
 garmin-graphics-generator: A CLI tool for watch face imagery: simulator screenshots, hero images and launcher icons
-├─ version:   0.8.0
+├─ version:   0.8.1
 ├─ developer: mailto:waclaw.kusnierczyk@gmail.com
 ├─ source:    https://github.com/wkusnierczyk/garmin-graphics-generator
 └─ licence:   MIT https://opensource.org/licenses/MIT
