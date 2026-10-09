@@ -261,7 +261,7 @@ class WatchHeroGenerator:
             name, _ = os.path.splitext(filename)
 
             aspect_ratio = image.height / image.width
-            new_height = int(self._resized_width * aspect_ratio)
+            new_height = max(1, int(self._resized_width * aspect_ratio))
 
             resized_image = image.resize(
                 (self._resized_width, new_height), Image.Resampling.LANCZOS

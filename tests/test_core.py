@@ -101,3 +101,16 @@ def test_pipeline_execution(
 
         # Verify resize logic was triggered
         assert mock_image.resize.called
+
+
+def test_a_very_wide_input_keeps_a_resized_height_of_at_least_one(tmp_path):
+    """#40: the resized height truncated to 0 and Image.resize raised."""
+    gen = WatchHeroGenerator().set_output_directory(str(tmp_path)).set_resized_width(10)
+    # pylint: disable=protected-access
+    gen._input_paths = ["wide.png"]
+    gen._processed_images = [Image.new("RGBA", (1000, 1), (10, 10, 10, 255))]
+
+    gen.generate_resized_files()
+
+    resized = Image.open(tmp_path / f"wide{gen._resized_suffix}.png")
+    assert resized.size == (10, 1)
