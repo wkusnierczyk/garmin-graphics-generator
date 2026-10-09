@@ -515,8 +515,8 @@ different `--fallback-icon` then fails, and an edition's fallback goes unchecked
 Tested on macOS and Linux; Windows is not supported. `shots` also needs Docker.
 
 ```bash
-git clone <repository-url>
-cd garmin_graphics_generator
+git clone https://github.com/wkusnierczyk/garmin-graphics-generator.git
+cd garmin-graphics-generator
 pip install .
 ```
 
@@ -803,6 +803,6 @@ garmin-graphics-generator --about
 garmin-graphics-generator: A CLI tool for watch face imagery: simulator screenshots, hero images and launcher icons
 ├─ version:   0.7.0
 ├─ developer: mailto:waclaw.kusnierczyk@gmail.com
-├─ source:    https://github.com/wkusnierczyk/garmin_graphics_generator
+├─ source:    https://github.com/wkusnierczyk/garmin-graphics-generator
 └─ licence:   MIT https://opensource.org/licenses/MIT
 ```

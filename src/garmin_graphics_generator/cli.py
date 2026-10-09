@@ -578,7 +578,7 @@ def print_about():
     )
     print(f"├─ version:   {tool_version}")
     print("├─ developer: mailto:waclaw.kusnierczyk@gmail.com")
-    print("├─ source:    https://github.com/wkusnierczyk/garmin_graphics_generator")
+    print("├─ source:    https://github.com/wkusnierczyk/garmin-graphics-generator")
     print("└─ licence:   MIT https://opensource.org/licenses/MIT")
 
 
