@@ -292,6 +292,10 @@ _OFFSET_HOURS = 24
 _TRANSITION_HOURS = 167
 
 
+# What a component of a tz name is made of, per the tz database's own rules.
+_ZONE_PART = re.compile(r"[A-Za-z0-9._+-]+")
+
+
 class TimeZone(NamedTuple):
     """
     What the container's TZ is made from: a POSIX rule given as it is, or the
@@ -379,12 +383,16 @@ def _zone_parts(name: str) -> Optional[List[str]]:
     """
     ``name``'s path components within a zone database, or None if it leaves one.
 
-    Split on either separator, so that ``..\\x`` is caught on Windows too.
+    Each component may hold only what tz names are made of -- ASCII letters and
+    digits, ``.``, ``_``, ``+`` and ``-`` -- and may not be ``.`` or ``..``. That
+    leaves nothing for a platform to read as a root, a drive or a separator:
+    ``/x``, ``..\\x``, ``C:x`` and ``Asia\\C:\\Tokyo`` all fail, everywhere.
     """
-    parts = re.split(r"[\\/]", name)
-    if os.path.isabs(name) or os.path.splitdrive(name)[0]:
-        return None
-    if any(part in ("", os.curdir, os.pardir) for part in parts):
+    parts = name.split("/")
+    if any(
+        part in (os.curdir, os.pardir) or not _ZONE_PART.fullmatch(part)
+        for part in parts
+    ):
         return None
     return parts
 

@@ -349,7 +349,18 @@ def capture_command(tmp_path, monkeypatch, **options):
 class TestResolveTimezone:
     """The tester image has no zone database, so a name has to be given its file."""
 
-    @pytest.mark.parametrize("name", ["Asia/Tokyo", "UTC", "America/New_York"])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Asia/Tokyo",
+            "UTC",
+            "America/New_York",
+            "America/Argentina/Buenos_Aires",
+            "Etc/GMT+5",
+            "Etc/GMT-14",
+            "America/Port-au-Prince",
+        ],
+    )
     def test_a_name_is_found_in_the_database(self, tmp_path, name):
         path = make_zone(tmp_path, name)
         assert resolve_timezone(name, [str(tmp_path)]) == TimeZone(path=str(path))
@@ -437,9 +448,20 @@ class TestResolveTimezone:
     def test_a_rule_needs_no_database(self, tmp_path):
         assert resolve_timezone("JST-9", [str(tmp_path / "none")]).rule == "JST-9"
 
-    @pytest.mark.parametrize("value", ["..\\Asia\\Tokyo", "Asia\\..\\..\\Odd"])
-    def test_a_backslash_cannot_leave_the_database(self, tmp_path, value):
-        """A separator on Windows: the zone outside the database is not read."""
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "..\\Asia\\Tokyo",
+            "Asia\\..\\..\\Odd",
+            "C:Odd",
+            "C:\\Odd",
+            "Asia\\C:\\Tokyo",
+            "Asia/C:/Tokyo",
+            "Asia/To\0kyo",
+        ],
+    )
+    def test_a_name_cannot_leave_the_database(self, tmp_path, value):
+        """Separators and drives on Windows: the zone outside is not read."""
         make_database(tmp_path / "db")
         make_zone(tmp_path, "Asia/Tokyo")
         make_zone(tmp_path, "Odd")
