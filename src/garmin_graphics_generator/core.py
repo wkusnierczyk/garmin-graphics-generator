@@ -173,15 +173,23 @@ class WatchHeroGenerator:
         """
         Sets the percentage of the canvas (1-100) the images aim to fill together.
 
-        It decides how large the images are drawn, not where: a denser composition
-        raises this and raises the overlap cap enough for the layout to succeed.
-        Unlike the overlap cap it is not clamped, since a value of 0 or past 100
-        is a mistake rather than an extreme.
+        It sets the target size an image is shrunk to, not where it goes. An image
+        is never enlarged, so raising this only draws the images larger while
+        they are larger than the target: an input already smaller stays as it
+        is. A denser composition raises this and raises the overlap cap enough
+        for the layout to succeed. Unlike the overlap cap it is not clamped,
+        since a value of 0 or past 100, or a non-integer, is a mistake rather
+        than an extreme.
         """
-        if not MIN_COVERAGE <= coverage_percent <= MAX_COVERAGE:
+        # bool is an int subclass, and True would otherwise pass as 1.
+        if (
+            isinstance(coverage_percent, bool)
+            or not isinstance(coverage_percent, int)
+            or not MIN_COVERAGE <= coverage_percent <= MAX_COVERAGE
+        ):
             raise ValueError(
-                f"coverage must be {MIN_COVERAGE}..{MAX_COVERAGE} percent, "
-                f"got {coverage_percent}"
+                f"coverage must be a whole percentage from {MIN_COVERAGE} to "
+                f"{MAX_COVERAGE}, got {coverage_percent!r}"
             )
         self._coverage = coverage_percent
         return self

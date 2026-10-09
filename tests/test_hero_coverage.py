@@ -129,7 +129,17 @@ class TestValidation:
 
     @pytest.mark.parametrize("coverage", [0, -5, 101, 250])
     def test_the_setter_refuses_out_of_range(self, coverage):
-        with pytest.raises(ValueError, match=r"coverage must be 1\.\.100 percent"):
+        with pytest.raises(
+            ValueError, match=r"coverage must be a whole percentage from 1 to 100"
+        ):
+            WatchHeroGenerator().set_coverage(coverage)
+
+    @pytest.mark.parametrize("coverage", [60.5, 60.0, True, "60", None])
+    def test_the_setter_refuses_anything_but_an_int(self, coverage):
+        """True is an int to Python, and would otherwise pass as a coverage of 1."""
+        with pytest.raises(
+            ValueError, match=r"got " + repr(coverage).replace(".", r"\.")
+        ):
             WatchHeroGenerator().set_coverage(coverage)
 
     @pytest.mark.parametrize("value", ["0", "101", "-1", "60.5", "dense"])
