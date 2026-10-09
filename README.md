@@ -450,6 +450,8 @@ the watch face's own `Makefile` and it fails the build when the device list and 
 
 ## Installation
 
+Tested on macOS and Linux; Windows is not supported. `shots` also needs Docker.
+
 ```bash
 git clone <repository-url>
 cd garmin_graphics_generator
