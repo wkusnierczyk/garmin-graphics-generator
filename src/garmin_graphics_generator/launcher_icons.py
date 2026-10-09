@@ -18,6 +18,10 @@ entries come after the shared ones, so its icons override them, and an edition t
 build never names never sees them. Entries are written relative to the jungle's own
 directory, which is how monkeyc resolves them.
 
+A project that documents the sizes in its README names the text introducing the
+table, its anchor. Generation then rewrites the table under it, and the check reads it
+back against the committed mapping, so the README cannot drift from what ships.
+
 The artwork is supplied by the project, as a renderer: a callable taking the target
 edge in pixels and returning a square image of exactly that size. Resampling one
 master image is the built-in default and is right for artwork made of a few bold
@@ -31,6 +35,7 @@ import os
 import posixpath
 import re
 import shlex
+import sys
 from typing import Callable, Dict, List, Optional, Tuple
 
 from PIL import Image
@@ -45,6 +50,7 @@ from .constants import (
     JUNGLE_NAME,
     LAUNCHER_ICON_NAME,
     MANIFEST_NAME,
+    README_NAME,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +74,10 @@ BLOCK_PATTERN = re.compile(
     r"^# END generated launcher icon mapping[^\n]*\n?",
     re.MULTILINE | re.DOTALL,
 )
+
+# One row of the README table as :func:`table` writes it. Read as width and height, so
+# a row stating a non-square size disagrees with the mapping rather than going unread.
+TABLE_ROW_PATTERN = re.compile(r"^\|\s*(\S+)\s*\|\s*(\d+)\s*x\s*(\d+)\s*\|\s*$")
 
 Renderer = Callable[[int], Image.Image]
 
@@ -126,7 +136,15 @@ def load_renderer(specification: str) -> Renderer:
         if spec is None or spec.loader is None:
             raise LauncherIconError(f"cannot load renderer from {target}")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        # Imported without caching bytecode: the renderer lives in the project, and
+        # a __pycache__/ beside it is an untracked build artifact the project would
+        # have to ignore. Restored after, as the flag is process-wide.
+        writes_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = writes_bytecode
     else:
         module = importlib.import_module(target)
 
@@ -164,6 +182,8 @@ class LauncherIconGenerator:
         self._jungle: str = JUNGLE_NAME
         self._icon_root: str = ""
         self._fallback_path: str = FALLBACK_ICON_PATH
+        self._readme: str = README_NAME
+        self._readme_anchor: Optional[str] = None
         self._sizes: Dict[str, int] = {}
 
     # ------------------------------------------------------------------ setters
@@ -224,6 +244,22 @@ class LauncherIconGenerator:
         self._fallback_path = path
         return self
 
+    def set_readme_anchor(
+        self, anchor: Optional[str], readme: str = README_NAME
+    ) -> "LauncherIconGenerator":
+        """
+        Sets the text the size table follows in ``readme``, or None for no table.
+
+        Typically the sentence introducing the table. The table is the run of ``|``
+        lines after it and before the next heading; generation rewrites it, or inserts
+        one after the anchor's line, and the check compares it with the mapping.
+        Without an anchor the README is neither written nor checked. ``readme`` is
+        relative to the project.
+        """
+        self._readme_anchor = anchor or None
+        self._readme = readme
+        return self
+
     # ------------------------------------------------------------------- paths
 
     def _path(self, *parts: str) -> str:
@@ -272,6 +308,10 @@ class LauncherIconGenerator:
             options.append("--no-fallback-icon")
         elif edition or fallback != FALLBACK_ICON_PATH:
             options += ["--fallback-icon", fallback]
+        if self._readme_anchor is not None:
+            if self._relative(self._readme, "") != README_NAME:
+                options += ["--readme", self._relative(self._readme, "")]
+            options += ["--readme-anchor", self._readme_anchor]
         return " ".join([DEFAULT_COMMAND] + [shlex.quote(o) for o in options])
 
     def _output_directories(self) -> List[str]:
@@ -385,6 +425,8 @@ class LauncherIconGenerator:
                 raise LauncherIconError(
                     f"the fallback icon path {self._fallback_path!r} is not a .png file"
                 )
+        if self._readme_anchor is not None:
+            self._read_readme()
         return self
 
     # ---------------------------------------------------------------- generation
@@ -454,6 +496,50 @@ class LauncherIconGenerator:
             handle.write(splice(text, block))
         logger.info("mapped %d products in %s", len(self._sizes), self._jungle)
         return self
+
+    # ------------------------------------------------------------------- README
+
+    def _read_readme(self) -> str:
+        """The README's text, which has to hold the anchor."""
+        readme = self._path(self._readme)
+        if not os.path.isfile(readme):
+            raise LauncherIconError(f"no README at {readme}")
+        with open(readme, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        if self._readme_anchor not in text:
+            raise LauncherIconError(
+                f"{self._readme} has no {self._readme_anchor!r} to put the icon table "
+                "under; check --readme-anchor"
+            )
+        return text
+
+    def write_readme(self) -> "LauncherIconGenerator":
+        """
+        Rewrites the README's size table under the anchor, or inserts one there.
+
+        Does nothing when no anchor is set, so a project without a README table is
+        unaffected.
+        """
+        if self._readme_anchor is None:
+            return self
+        self.validate()
+        if not self._sizes:
+            self.resolve_sizes()
+        text = self._read_readme()
+        with open(self._path(self._readme), "w", encoding="utf-8") as handle:
+            handle.write(splice_table(text, self._readme_anchor, table(self._sizes)))
+        logger.info("tabulated %d products in %s", len(self._sizes), self._readme)
+        return self
+
+    def _readme_table(self) -> Optional[Dict[str, Tuple[int, int]]]:
+        """
+        Reads the size table back out of the README, as product to (width, height).
+
+        None when no anchor is set; raises when the README or the anchor is missing.
+        """
+        if self._readme_anchor is None:
+            return None
+        return read_table(self._read_readme(), self._readme_anchor)
 
     def mapping(self) -> Dict[str, int]:
         """
@@ -578,6 +664,8 @@ class LauncherIconGenerator:
                 )
             )
 
+        report.extend(self._check_fallback(mapped))
+
         orphans = self.unmapped_directories(set(mapped.values()))
         report.append(
             (
@@ -588,8 +676,72 @@ class LauncherIconGenerator:
             )
         )
 
+        report.extend(self._check_readme(mapped))
         report.extend(self._check_against_sdk(mapped))
         return report
+
+    def _check_fallback(self, mapped: Dict[str, int]) -> List[Tuple[bool, str]]:
+        """
+        The fallback is the largest size mapped: read from the mapping, not the SDK.
+
+        Not checked when it is not written, nor without a mapping to size it from;
+        the missing mapping is reported already.
+        """
+        if not self._fallback_icon or not mapped:
+            return []
+        fallback = self._path(self._fallback_path)
+        largest = max(mapped.values())
+        if not os.path.isfile(fallback):
+            return [(False, f"{fallback} is missing")]
+        actual = read_png_size(fallback)
+        return [
+            (
+                actual == (largest, largest),
+                f"{fallback} is the {largest}x{largest} fallback, the largest size mapped"
+                if actual == (largest, largest)
+                else f"{fallback} is "
+                + (f"{actual[0]}x{actual[1]}" if actual else "not a PNG")
+                + f", the largest size mapped is {largest}x{largest}",
+            )
+        ]
+
+    def _check_readme(self, mapped: Dict[str, int]) -> List[Tuple[bool, str]]:
+        """The README's table states the mapping, product by product."""
+        try:
+            stated = self._readme_table()
+        except LauncherIconError as error:
+            return [(False, str(error))]
+        if stated is None:
+            return []
+        if not stated:
+            return [
+                (
+                    False,
+                    f"{self._readme} has no icon table under {self._readme_anchor!r}",
+                )
+            ]
+        wrong = []
+        for product in sorted(set(stated) | set(mapped)):
+            row = stated.get(product)
+            size = mapped.get(product)
+            if row is not None and size is not None and row == (size, size):
+                continue
+            wrong.append(
+                f"{product} ("
+                + ("not in the table" if row is None else f"table {row[0]} x {row[1]}")
+                + ", "
+                + ("not mapped" if size is None else f"mapping {size} x {size}")
+                + ")"
+            )
+        return [
+            (
+                not wrong,
+                f"{self._readme}'s icon table agrees with the mapping ({len(stated)})"
+                if not wrong
+                else f"{self._readme}'s icon table disagrees with the mapping on "
+                + ", ".join(wrong),
+            )
+        ]
 
     def _check_against_sdk(self, mapped: Dict[str, int]) -> List[Tuple[bool, str]]:
         try:
@@ -714,6 +866,65 @@ def table(sizes: Dict[str, int]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _table_span(lines: List[str]) -> Tuple[int, int]:
+    """
+    Where the table is in the lines following the anchor: (start, end), or the
+    point to insert one at, twice, when there is none.
+
+    The first run of ``|`` lines, looked for only up to the next markdown heading, so
+    that a table in a later section is never mistaken for this one. ``lines[0]`` is
+    the rest of the anchor's own line, and is never the table.
+    """
+    for index in range(1, len(lines)):
+        line = lines[index]
+        if line.startswith("#"):
+            break
+        if line.startswith("|"):
+            end = index
+            while end < len(lines) and lines[end].startswith("|"):
+                end += 1
+            return index, end
+    return 1, 1
+
+
+def splice_table(text: str, anchor: str, rendered: str) -> str:
+    """
+    Replaces the table under ``anchor`` in a markdown text, or inserts one.
+
+    An inserted table goes right after the anchor's line, set off by a blank line on
+    either side. Everything else in the text is left as it was.
+    """
+    head, tail = text.split(anchor, 1)
+    lines = tail.split("\n")
+    rows = rendered.rstrip("\n").split("\n")
+    start, end = _table_span(lines)
+    if start == end:
+        # No table yet. Blank lines after the anchor fold into the one that sets the
+        # table off, so the text reads the same whatever spacing it had.
+        while end < len(lines) and not lines[end].strip():
+            end += 1
+        rows = [""] + rows + [""]
+    return head + anchor + "\n".join(lines[:start] + rows + lines[end:])
+
+
+def read_table(text: str, anchor: str) -> Dict[str, Tuple[int, int]]:
+    """
+    Reads the table under ``anchor`` back, as product to (width, height).
+
+    Empty when there is no table there, or the anchor is not in the text.
+    """
+    if anchor not in text:
+        return {}
+    lines = text.split(anchor, 1)[1].split("\n")
+    start, end = _table_span(lines)
+    stated: Dict[str, Tuple[int, int]] = {}
+    for line in lines[start:end]:
+        match = TABLE_ROW_PATTERN.match(line)
+        if match:
+            stated[match.group(1)] = (int(match.group(2)), int(match.group(3)))
+    return stated
+
+
 __all__ = [
     "LauncherIconError",
     "LauncherIconGenerator",
@@ -723,7 +934,9 @@ __all__ = [
     "needs_quotes",
     "normalise_directory",
     "read_png_size",
+    "read_table",
     "resample_renderer",
     "splice",
+    "splice_table",
     "table",
 ]

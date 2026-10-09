@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import sys
 
 import pytest
 from PIL import Image
@@ -14,8 +15,10 @@ from garmin_graphics_generator.launcher_icons import (
     mapping_block,
     mapping_pattern,
     read_png_size,
+    read_table,
     resample_renderer,
     splice,
+    splice_table,
     table,
 )
 
@@ -788,3 +791,304 @@ def test_the_recorded_command_quotes_a_path_with_a_space(tmp_path):
         "premium edition"
     ).generate_icons().write_mapping()
     assert "--icon-root 'premium edition'" in (project / "premium.jungle").read_text()
+
+
+# ------------------------------------------------------------------- the README table
+
+ANCHOR = "Each supported product is mapped to the icon its device asks for"
+
+README = f"""# My watch face
+
+## Launcher icon
+
+The size is per device.
+
+{ANCHOR}:
+
+The icons are generated output.
+
+## Fonts
+
+| Font | Size |
+| :--- | ---: |
+| tiny | 12   |
+"""
+
+
+def failures_of(report):
+    return [message for passed, message in report if not passed]
+
+
+def with_readme(project, devices, text=README, anchor=ANCHOR):
+    (project / "README.md").write_text(text)
+    return generator(project, devices).set_readme_anchor(anchor)
+
+
+def with_anchor(project, devices, anchor=ANCHOR):
+    return generator(project, devices).set_readme_anchor(anchor)
+
+
+def test_splice_table_inserts_one_right_after_the_anchor():
+    spliced = splice_table(README, ANCHOR, table(SIZES))
+    assert f"{ANCHOR}:\n\n| Product | " in spliced
+    assert "| tiny    | 38 x 38 |\n\nThe icons are generated output.\n" in spliced
+    assert spliced.replace(table(SIZES) + "\n", "") == README
+
+
+def test_splice_table_inserts_at_the_end_of_the_text():
+    spliced = splice_table(f"# Face\n\n{ANCHOR}:\n", ANCHOR, table(SIZES))
+    assert spliced == f"# Face\n\n{ANCHOR}:\n\n" + table(SIZES)
+    assert read_table(spliced, ANCHOR) == {p: (s, s) for p, s in SIZES.items()}
+
+
+def test_splice_table_replaces_only_the_table_under_the_anchor():
+    first = splice_table(README, ANCHOR, table(SIZES))
+    second = splice_table(first, ANCHOR, table({"venu3": 60}))
+    assert "| venu3   | 60 x 60 |" in second
+    assert "tiny    |" not in second
+    # The next section's table is not this one, and is left alone.
+    assert "| tiny | 12   |" in second
+    assert second.count("The icons are generated output.") == 1
+
+
+def test_splice_table_is_stable_on_a_second_run():
+    once = splice_table(README, ANCHOR, table(SIZES))
+    assert splice_table(once, ANCHOR, table(SIZES)) == once
+
+
+def test_read_table_stops_at_the_next_heading():
+    # No table in the anchor's section: the one under "## Fonts" is not it.
+    assert read_table(README, ANCHOR) == {}
+
+
+def test_read_table_reads_back_what_table_writes():
+    text = splice_table(README, ANCHOR, table(SIZES))
+    assert read_table(text, ANCHOR) == {p: (s, s) for p, s in SIZES.items()}
+
+
+def test_read_table_reads_the_format_the_local_script_wrote():
+    # The table as garmin-matrix-time's tools/make-launcher-icons.py left it.
+    text = (
+        f"{ANCHOR}:\n\n"
+        "| Product                 |    Icon |\n"
+        "| :---------------------- | ------: |\n"
+        "| venu3                   | 70 x 70 |\n"
+        "| instinctcrossoveramoled | 38 x 38 |\n\n"
+        "The icons are generated output.\n"
+    )
+    assert read_table(text, ANCHOR) == {
+        "venu3": (70, 70),
+        "instinctcrossoveramoled": (38, 38),
+    }
+
+
+def test_generation_writes_the_readme_table(tmp_path):
+    project, devices = make_project(tmp_path)
+    with_readme(project, devices).generate_icons().write_mapping().write_readme()
+    readme = (project / "README.md").read_text()
+    assert table(SIZES) in readme
+    assert "| tiny | 12   |" in readme
+    report = with_anchor(project, devices).check()
+    assert not failures_of(report)
+    assert any("icon table agrees with the mapping (3)" in m for _, m in report)
+
+
+def test_check_reports_each_product_the_table_disagrees_on(tmp_path):
+    project, devices = make_project(tmp_path)
+    with_readme(project, devices).generate_icons().write_mapping().write_readme()
+    readme = project / "README.md"
+    readme.write_text(
+        readme.read_text()
+        .replace("| tiny    | 38 x 38 |", "| tiny    | 40 x 40 |")
+        .replace("| venu3s  | 70 x 70 |\n", "| gone    | 54 x 54 |\n")
+    )
+    failures = failures_of(with_anchor(project, devices).check())
+    assert len(failures) == 1
+    assert "gone (table 54 x 54, not mapped)" in failures[0]
+    assert "tiny (table 40 x 40, mapping 38 x 38)" in failures[0]
+    assert "venu3s (not in the table, mapping 70 x 70)" in failures[0]
+    assert "venu3 (" not in failures[0]
+
+
+def test_check_reports_a_missing_table(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    (project / "README.md").write_text(README)
+    failures = failures_of(with_anchor(project, devices).check())
+    assert failures == [f"README.md has no icon table under {ANCHOR!r}"]
+
+
+def test_check_reports_a_missing_anchor(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    (project / "README.md").write_text(README)
+    failures = failures_of(with_anchor(project, devices, "Nowhere").check())
+    assert len(failures) == 1
+    assert "'Nowhere'" in failures[0]
+
+
+def test_check_reports_a_missing_readme(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    failures = failures_of(with_anchor(project, devices).check())
+    assert len(failures) == 1
+    assert "no README at" in failures[0]
+
+
+def test_without_an_anchor_the_readme_is_left_alone(tmp_path):
+    project, devices = make_project(tmp_path)
+    (project / "README.md").write_text(README)
+    generator(project, devices).generate_icons().write_mapping().write_readme()
+    assert (project / "README.md").read_text() == README
+    report = generator(project, devices).check()
+    assert not failures_of(report)
+    assert not any("README" in message for _, message in report)
+
+
+def test_a_missing_anchor_fails_before_anything_is_written(tmp_path):
+    project, devices = make_project(tmp_path)
+    (project / "README.md").write_text(README)
+    with pytest.raises(LauncherIconError, match="--readme-anchor"):
+        with_readme(project, devices, anchor="Nowhere").generate_icons()
+    assert not (project / "resources").exists()
+    assert not any(name.startswith("resources-icon-") for name in os.listdir(project))
+
+
+def test_editions_keep_tables_of_their_own(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "README.md").write_text(README + "\n## Premium\n\nPremium's icons:\n")
+    with_anchor(project, devices).generate_icons().write_mapping().write_readme()
+    edition(project, devices).set_readme_anchor(
+        "Premium's icons"
+    ).generate_icons().write_mapping().write_readme()
+    assert (project / "README.md").read_text().count(table(SIZES)) == 2
+    assert not failures_of(with_anchor(project, devices).check())
+    assert not failures_of(
+        edition(project, devices).set_readme_anchor("Premium's icons").check()
+    )
+
+
+def test_cli_maintains_and_checks_the_readme_table(tmp_path, capsys):
+    project, devices = make_project(tmp_path)
+    (project / "README.md").write_text(README)
+    master = tmp_path / "master.png"
+    Image.new("RGB", (100, 100), "green").save(master)
+    options = ["icons", "-p", str(project), "-d", str(devices)]
+    anchor = ["--readme-anchor", ANCHOR]
+    assert main(options + anchor + ["-R", f"resample:{master}", "-q"]) == 0
+    assert table(SIZES) in (project / "README.md").read_text()
+    # The recorded command keeps the README in step when it is rerun.
+    assert f"--readme-anchor '{ANCHOR}'" in (project / "monkey.jungle").read_text()
+
+    capsys.readouterr()
+    assert main(options + anchor + ["--check"]) == 0
+    assert "README.md's icon table agrees" in capsys.readouterr().out
+
+    readme = project / "README.md"
+    readme.write_text(readme.read_text().replace("38 x 38", "40 x 40"))
+    assert main(options + anchor + ["--check", "-q"]) == 1
+    assert main(options + ["--check", "-q"]) == 0
+
+
+def test_cli_reads_the_readme_it_is_told(tmp_path):
+    project, devices = make_project(tmp_path)
+    (project / "docs").mkdir()
+    (project / "docs" / "icons.md").write_text(README)
+    generator(project, devices).set_readme_anchor(
+        ANCHOR, "docs/icons.md"
+    ).generate_icons().write_mapping().write_readme()
+    assert not (project / "README.md").exists()
+    assert "--readme docs/icons.md" in (project / "monkey.jungle").read_text()
+    options = ["icons", "-p", str(project), "-d", str(devices), "--check", "-q"]
+    assert main(options + ["--readme", "docs/icons.md", "--readme-anchor", ANCHOR]) == 0
+
+
+# ---------------------------------------------------------------- the fallback icon
+
+FALLBACK = "resources/drawables/launcher_icon.png"
+
+
+def test_check_passes_the_fallback_at_the_largest_size(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    report = generator(project, devices).check()
+    assert any(passed and "is the 70x70 fallback" in m for passed, m in report)
+
+
+def test_check_catches_a_missing_fallback(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    (project / FALLBACK).unlink()
+    failures = failures_of(generator(project, devices).check())
+    assert failures == [f"{os.path.join(str(project), FALLBACK)} is missing"]
+
+
+def test_check_catches_a_stale_fallback(tmp_path):
+    # As an SDK update raising the largest size would leave it.
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    Image.new("RGB", (60, 60), "green").save(project / FALLBACK)
+    failures = failures_of(generator(project, devices).check())
+    assert len(failures) == 1
+    assert "is 60x60, the largest size mapped is 70x70" in failures[0]
+
+
+def test_check_catches_a_fallback_that_is_not_a_png(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    (project / FALLBACK).write_bytes(b"version https://git-lfs.github.com/spec/v1\n")
+    failures = failures_of(generator(project, devices).check())
+    assert len(failures) == 1
+    assert "is not a PNG" in failures[0]
+
+
+def test_check_sizes_the_fallback_from_the_mapping_without_the_sdk(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    Image.new("RGB", (60, 60), "green").save(project / FALLBACK)
+    failures = failures_of(generator(project, tmp_path / "absent").check())
+    assert len(failures) == 1
+    assert "70x70" in failures[0]
+
+
+def test_check_skips_the_fallback_when_it_is_not_written(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).set_fallback_icon(
+        False
+    ).generate_icons().write_mapping()
+    report = generator(project, devices).set_fallback_icon(False).check()
+    assert not failures_of(report)
+    assert not any("largest size mapped" in message for _, message in report)
+
+
+def test_cli_checks_an_editions_fallback_only_when_named(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).generate_icons().write_mapping()
+    options = cli_edition(
+        project, devices, "--jungle", "premium.jungle", "--icon-root", "premium"
+    )
+    fallback = "premium/resources-base/drawables/launcher_icon.png"
+    # Not the shared edition's fallback, which this project does not have.
+    assert main(options + ["--check", "-q"]) == 0
+    assert main(options + ["--check", "-q", "--fallback-icon", fallback]) == 0
+    (project / fallback).unlink()
+    assert main(options + ["--check", "-q", "--fallback-icon", fallback]) == 1
+
+
+# -------------------------------------------------------------------- the renderer
+
+
+def test_load_renderer_leaves_no_bytecode_beside_the_file(tmp_path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "icon.py").write_text(
+        "from PIL import Image\n"
+        "def render(size):\n"
+        "    return Image.new('RGB', (size, size), 'green')\n"
+    )
+    before = sys.dont_write_bytecode
+    assert load_renderer(str(tools / "icon.py"))(38).size == (38, 38)
+    assert os.listdir(tools) == ["icon.py"]
+    assert sys.dont_write_bytecode == before

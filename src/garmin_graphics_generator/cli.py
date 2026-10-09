@@ -31,6 +31,7 @@ from .constants import (
     FALLBACK_ICON_PATH,
     JUNGLE_NAME,
     MANIFEST_NAME,
+    README_NAME,
 )
 from .launcher_icons import LauncherIconError, LauncherIconGenerator, load_renderer
 from .shots import (
@@ -227,6 +228,21 @@ def add_icons_arguments(parser: argparse.ArgumentParser):
         "--no-fallback-icon",
         action="store_true",
         help="Do not write the fallback icon",
+    )
+    parser.add_argument(
+        "--readme",
+        default=README_NAME,
+        metavar="PATH",
+        help=f"README holding the icon size table (default: {README_NAME})",
+    )
+    parser.add_argument(
+        "--readme-anchor",
+        metavar="TEXT",
+        help=(
+            "Text the README's icon size table follows, such as the sentence "
+            "introducing it; the table is rewritten on generation and checked by "
+            "--check (default: no README table)"
+        ),
     )
 
     mode = parser.add_mutually_exclusive_group()
@@ -608,6 +624,7 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
         .set_manifest(args.manifest)
         .set_jungle(args.jungle or JUNGLE_NAME)
         .set_icon_root(args.icon_root or "")
+        .set_readme_anchor(args.readme_anchor, args.readme)
     )
 
     # An edition is a jungle and an icon root together. Either one alone falls back
@@ -622,6 +639,10 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
         return 0
 
     if args.check:
+        # The default fallback path is the shared edition's, so an edition naming no
+        # fallback of its own has none checked rather than the shared one's.
+        if edition and args.fallback_icon is None:
+            generator.set_fallback_icon(False)
         report = generator.check()
         # Under --silent only the failures are printed, and a clean run says nothing
         # at all: the flag promises all output except errors suppressed. The exit
@@ -643,7 +664,7 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
         )
 
     generator.set_renderer(load_renderer(args.renderer))
-    generator.generate_icons().write_mapping()
+    generator.generate_icons().write_mapping().write_readme()
     return 0
 
 
