@@ -20,6 +20,7 @@ MAX_COVERAGE = 100
 DEFAULT_DEVICES_DIRECTORY = "~/Library/Application Support/Garmin/ConnectIQ/Devices"
 MANIFEST_NAME = "manifest.xml"
 JUNGLE_NAME = "monkey.jungle"
+README_NAME = "README.md"
 LAUNCHER_ICON_NAME = "launcher_icon.png"
 ICON_DIRECTORY_TEMPLATE = "resources-icon-{size}"
 # Drawn at the largest required size, for a product added to the manifest before the

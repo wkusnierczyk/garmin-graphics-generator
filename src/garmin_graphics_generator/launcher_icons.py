@@ -18,6 +18,10 @@ entries come after the shared ones, so its icons override them, and an edition t
 build never names never sees them. Entries are written relative to the jungle's own
 directory, which is how monkeyc resolves them.
 
+A project that documents the sizes in its README names the text introducing the
+table, its anchor. Generation then rewrites the table under it, and the check reads it
+back against the committed mapping, so the README cannot drift from what ships.
+
 The artwork is supplied by the project, as a renderer: a callable taking the target
 edge in pixels and returning a square image of exactly that size. Resampling one
 master image is the built-in default and is right for artwork made of a few bold
@@ -31,6 +35,7 @@ import os
 import posixpath
 import re
 import shlex
+import sys
 from typing import Callable, Dict, List, Optional, Tuple
 
 from PIL import Image
@@ -45,6 +50,14 @@ from .constants import (
     JUNGLE_NAME,
     LAUNCHER_ICON_NAME,
     MANIFEST_NAME,
+    README_NAME,
+)
+from .readme_table import (
+    ReadmeTableError,
+    Table,
+    anchor_line,
+    read_table,
+    splice_table,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,7 +139,15 @@ def load_renderer(specification: str) -> Renderer:
         if spec is None or spec.loader is None:
             raise LauncherIconError(f"cannot load renderer from {target}")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        # Imported without caching bytecode: the renderer lives in the project, and
+        # a __pycache__/ beside it is an untracked build artifact the project would
+        # have to ignore. Restored after, as the flag is process-wide.
+        writes_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = writes_bytecode
     else:
         module = importlib.import_module(target)
 
@@ -163,7 +184,9 @@ class LauncherIconGenerator:
         self._manifest: str = MANIFEST_NAME
         self._jungle: str = JUNGLE_NAME
         self._icon_root: str = ""
-        self._fallback_path: str = FALLBACK_ICON_PATH
+        self._fallback_path: Optional[str] = None
+        self._readme: str = README_NAME
+        self._readme_anchor: Optional[str] = None
         self._sizes: Dict[str, int] = {}
 
     # ------------------------------------------------------------------ setters
@@ -219,9 +242,35 @@ class LauncherIconGenerator:
         Sets where the fallback icon is written, relative to the project.
 
         Only the image is written. The drawables.xml declaring it belongs to the
-        project, because it may declare other bitmaps too.
+        project, because it may declare other bitmaps too. The default,
+        resources/drawables/launcher_icon.png, is the shared edition's: an edition
+        has none until it is set here, and then generation refuses to run unless
+        the fallback is turned off, and the check does not look for one.
         """
         self._fallback_path = path
+        return self
+
+    def set_readme_anchor(
+        self, anchor: Optional[str], readme: str = README_NAME
+    ) -> "LauncherIconGenerator":
+        """
+        Sets the text the size table follows in ``readme``, or None for no table.
+
+        Typically the sentence introducing the table, which has to begin exactly one
+        line outside fenced code. The table is the run of ``|`` lines following that
+        line with only blank lines between; generation rewrites it, or inserts one
+        directly after the anchor's line, and the check compares it with the mapping.
+        Without an anchor the README is neither written nor checked. ``readme`` is
+        relative to the project. An empty or blank anchor is refused rather than
+        taken for None: it would turn the table's check off without a word.
+        """
+        if anchor is not None and not anchor.strip():
+            raise LauncherIconError(
+                f"the README anchor {anchor!r} is empty; give the text the table "
+                "follows, or leave --readme-anchor out for no README table"
+            )
+        self._readme_anchor = anchor
+        self._readme = readme
         return self
 
     # ------------------------------------------------------------------- paths
@@ -250,6 +299,26 @@ class LauncherIconGenerator:
         """The icon root relative to the project, for messages and orphan names."""
         return self._relative(self._icon_root, "")
 
+    def _is_edition(self) -> bool:
+        """Whether this is an edition: a jungle or an icon root other than the default."""
+        return (
+            self._relative(self._jungle, "") != JUNGLE_NAME or self._root_label() != ""
+        )
+
+    def _fallback(self) -> Optional[str]:
+        """
+        The fallback icon's path relative to the project, or None when there is none.
+
+        None when it is turned off, and for an edition that has not been given one:
+        the default path is the shared edition's, and checking an edition against it
+        would test another edition's file.
+        """
+        if not self._fallback_icon:
+            return None
+        if self._fallback_path is not None:
+            return self._fallback_path
+        return None if self._is_edition() else FALLBACK_ICON_PATH
+
     def _command(self) -> str:
         """
         The command line that regenerates this mapping, for the jungle's comment.
@@ -260,18 +329,23 @@ class LauncherIconGenerator:
         """
         jungle = self._relative(self._jungle, "")
         root = self._root_label()
-        edition = jungle != JUNGLE_NAME or root != ""
-        fallback = self._relative(self._fallback_path, "")
+        edition = self._is_edition()
+        fallback = self._fallback()
+        fallback = self._relative(fallback, "") if fallback is not None else None
 
         options = []
         if self._relative(self._manifest, "") != MANIFEST_NAME:
             options += ["--manifest", self._relative(self._manifest, "")]
         if edition:
             options += ["--jungle", jungle, "--icon-root", root or "."]
-        if not self._fallback_icon:
+        if fallback is None:
             options.append("--no-fallback-icon")
         elif edition or fallback != FALLBACK_ICON_PATH:
             options += ["--fallback-icon", fallback]
+        if self._readme_anchor is not None:
+            if self._relative(self._readme, "") != README_NAME:
+                options += ["--readme", self._relative(self._readme, "")]
+            options += ["--readme-anchor", self._readme_anchor]
         return " ".join([DEFAULT_COMMAND] + [shlex.quote(o) for o in options])
 
     def _output_directories(self) -> List[str]:
@@ -279,8 +353,8 @@ class LauncherIconGenerator:
         directories = [
             self._icon_directory(size) for size in sorted(set(self._sizes.values()))
         ]
-        if self._fallback_icon:
-            directories.append(os.path.dirname(self._path(self._fallback_path)))
+        if self._fallback() is not None:
+            directories.append(os.path.dirname(self._path(self._fallback())))
         return directories
 
     # ------------------------------------------------------------------ sources
@@ -379,12 +453,19 @@ class LauncherIconGenerator:
                 f"the icon root {self._icon_root!r} contains {unwritable[0]!r}, which a "
                 "jungle entry cannot hold"
             )
-        if self._fallback_icon:
-            fallback = self._path(self._fallback_path)
+        if self._fallback_icon and self._fallback() is None:
+            raise LauncherIconError(
+                "an edition needs a fallback icon of its own, or none: the default is "
+                "the shared edition's; give --fallback-icon PATH or --no-fallback-icon"
+            )
+        if self._fallback() is not None:
+            fallback = self._path(self._fallback())
             if os.path.isdir(fallback) or not fallback.lower().endswith(".png"):
                 raise LauncherIconError(
-                    f"the fallback icon path {self._fallback_path!r} is not a .png file"
+                    f"the fallback icon path {self._fallback()!r} is not a .png file"
                 )
+        if self._readme_anchor is not None:
+            self._read_readme()
         return self
 
     # ---------------------------------------------------------------- generation
@@ -427,9 +508,9 @@ class LauncherIconGenerator:
                 handle.write(DRAWABLES_XML)
             logger.info("wrote %s at %dx%d", directory, size, size)
 
-        if self._fallback_icon:
+        if self._fallback() is not None:
             largest = max(self._sizes.values())
-            self._write_icon(self._path(self._fallback_path), largest)
+            self._write_icon(self._path(self._fallback()), largest)
             logger.info("wrote the %dx%d fallback icon", largest, largest)
 
         for directory in self.unmapped_directories(set(self._sizes.values())):
@@ -454,6 +535,60 @@ class LauncherIconGenerator:
             handle.write(splice(text, block))
         logger.info("mapped %d products in %s", len(self._sizes), self._jungle)
         return self
+
+    # ------------------------------------------------------------------- README
+
+    def _read_readme(self) -> str:
+        """
+        The README's text, its line endings as they are in the file.
+
+        Raises when the README is missing, or the anchor does not begin exactly one
+        line of it outside code.
+        """
+        readme = self._path(self._readme)
+        if not os.path.isfile(readme):
+            raise LauncherIconError(f"no README at {readme}")
+        # Untranslated, so the file is written back with the endings it had.
+        with open(readme, "r", encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        try:
+            anchor_line(text.split("\n"), self._readme_anchor)
+        except ReadmeTableError as error:
+            raise LauncherIconError(
+                f"{self._readme}: {error}; check --readme-anchor"
+            ) from error
+        return text
+
+    def write_readme(self) -> "LauncherIconGenerator":
+        """
+        Rewrites the README's size table under the anchor, or inserts one there.
+
+        Does nothing when no anchor is set, so a project without a README table is
+        unaffected.
+        """
+        if self._readme_anchor is None:
+            return self
+        self.validate()
+        if not self._sizes:
+            self.resolve_sizes()
+        text = self._read_readme()
+        spliced = splice_table(text, self._readme_anchor, table(self._sizes))
+        with open(
+            self._path(self._readme), "w", encoding="utf-8", newline=""
+        ) as handle:
+            handle.write(spliced)
+        logger.info("tabulated %d products in %s", len(self._sizes), self._readme)
+        return self
+
+    def _readme_table(self) -> Optional[Table]:
+        """
+        Reads the size table back out of the README (see :func:`read_table`).
+
+        None when no anchor is set; raises when the README or the anchor is missing.
+        """
+        if self._readme_anchor is None:
+            return None
+        return read_table(self._read_readme(), self._readme_anchor)
 
     def mapping(self) -> Dict[str, int]:
         """
@@ -578,6 +713,8 @@ class LauncherIconGenerator:
                 )
             )
 
+        report.extend(self._check_fallback(mapped))
+
         orphans = self.unmapped_directories(set(mapped.values()))
         report.append(
             (
@@ -588,7 +725,83 @@ class LauncherIconGenerator:
             )
         )
 
+        report.extend(self._check_readme(mapped))
         report.extend(self._check_against_sdk(mapped))
+        return report
+
+    def _check_fallback(self, mapped: Dict[str, int]) -> List[Tuple[bool, str]]:
+        """
+        The fallback is the largest size mapped: read from the mapping, not the SDK.
+
+        Not checked when it is not written, for an edition given no path for it, nor
+        without a mapping to size it from; the missing mapping is reported already.
+        """
+        if self._fallback() is None or not mapped:
+            return []
+        fallback = self._path(self._fallback())
+        largest = max(mapped.values())
+        if not os.path.isfile(fallback):
+            return [(False, f"{fallback} is missing")]
+        actual = read_png_size(fallback)
+        return [
+            (
+                actual == (largest, largest),
+                f"{fallback} is the {largest}x{largest} fallback, the largest size mapped"
+                if actual == (largest, largest)
+                else f"{fallback} is "
+                + (f"{actual[0]}x{actual[1]}" if actual else "not a PNG")
+                + f", the largest size mapped is {largest}x{largest}",
+            )
+        ]
+
+    def _check_readme(self, mapped: Dict[str, int]) -> List[Tuple[bool, str]]:
+        """The README's table states the mapping, product by product."""
+        try:
+            found = self._readme_table()
+        except LauncherIconError as error:
+            return [(False, str(error))]
+        if found is None:
+            return []
+        if found.rows is None:
+            return [
+                (
+                    False,
+                    f"{self._readme} has no icon table directly under "
+                    f"{self._readme_anchor!r}",
+                )
+            ]
+        report: List[Tuple[bool, str]] = []
+        if found.problems:
+            report.append(
+                (
+                    False,
+                    f"{self._readme}'s icon table does not read cleanly: "
+                    + "; ".join(found.problems),
+                )
+            )
+        stated = found.rows
+        wrong = []
+        for product in sorted(set(stated) | set(mapped)):
+            row = stated.get(product)
+            size = mapped.get(product)
+            if row is not None and size is not None and row == (size, size):
+                continue
+            wrong.append(
+                f"{product} ("
+                + ("not in the table" if row is None else f"table {row[0]} x {row[1]}")
+                + ", "
+                + ("not mapped" if size is None else f"mapping {size} x {size}")
+                + ")"
+            )
+        report.append(
+            (
+                not wrong,
+                f"{self._readme}'s icon table agrees with the mapping ({len(stated)})"
+                if not wrong
+                else f"{self._readme}'s icon table disagrees with the mapping on "
+                + ", ".join(wrong),
+            )
+        )
         return report
 
     def _check_against_sdk(self, mapped: Dict[str, int]) -> List[Tuple[bool, str]]:
@@ -723,7 +936,9 @@ __all__ = [
     "needs_quotes",
     "normalise_directory",
     "read_png_size",
+    "read_table",
     "resample_renderer",
     "splice",
+    "splice_table",
     "table",
 ]

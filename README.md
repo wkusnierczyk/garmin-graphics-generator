@@ -45,7 +45,8 @@ Implementation language: Python.
   Resizes the input images to a common width (200 pixels by default) for inclusion in a watch face `README.md` file.
 * **Per-device launcher icons**  
   Reads the required launcher icon size of every supported device from the SDK, renders one icon per
-  distinct size, and writes the per-product `resourcePath` mapping into `monkey.jungle`.
+  distinct size, and writes the per-product `resourcePath` mapping into `monkey.jungle` and, when
+  asked to, the product to size table into the project README.
 * **Command line interface**  
   Easy to use CLI tool for quick processing of a list of images.
   See `garmin-graphics-generator --help` for more information.
@@ -358,6 +359,10 @@ garmin-graphics-generator icons -p ../my-watch-face --check
 
 # print the product to icon size table for the project README
 garmin-graphics-generator icons -p ../my-watch-face --table
+
+# regenerate, keeping the table in the project README in step
+garmin-graphics-generator icons -p ../my-watch-face -R ../my-watch-face/tools/icon.py \
+    --readme-anchor "Each supported product is mapped to the icon its device asks for"
 ```
 
 `--check` and `--table` read the committed mapping, so they need no SDK; `--table` falls back to the
@@ -391,7 +396,43 @@ def render(size):
 ```
 
 and points at it with `-R tools/icon.py`. `-R tools/icon.py:name` picks a differently named function,
-and `-R package.module:name` loads one from an installed module.
+and `-R package.module:name` loads one from an installed module. A renderer file is imported without
+writing bytecode, so no `__pycache__/` is left next to it in the project.
+
+### The README table
+
+The table `--table` prints is derived from the manifest and the SDK, so adding or dropping a device
+makes a pasted copy wrong without a word. Give `--readme-anchor` the text the table follows in the
+project README, typically the sentence introducing it, and the command keeps that copy itself:
+
+```markdown
+Each supported product is mapped to the icon its device asks for:
+
+| Product         |    Icon |
+| :-------------- | ------: |
+| venu3           | 70 x 70 |
+| fr165           | 54 x 54 |
+```
+
+The anchor has to begin exactly one line of the README outside fenced code: as the line's start, or
+the whole of it, after any indentation or heading markers. Text further along a line does not count, so
+a command quoting the anchor is never taken for it, and a README in which two lines begin with it is
+refused rather than guessed at.
+
+The table is the run of `|` lines that follows the anchor's line with nothing but blank lines between.
+Generation rewrites exactly those lines. When anything else follows the anchor first — prose, a code
+block, another table further down — it inserts the table directly after the anchor's line and touches
+nothing below. `--check` reads back exactly the same lines, so it never checks a table generation would
+not write. It fails on every product the table and the committed mapping disagree on, on any row that
+does not read as a product and a size, and on a product listed twice.
+
+The README is `README.md` in the project unless `--readme PATH` says otherwise. Every line outside the
+table keeps its own line ending, and the table's lines end as the anchor's line does. Generation checks
+the anchor before it writes anything.
+
+Without `--readme-anchor` the README is neither written nor checked. An empty or blank anchor is an
+error, not the same as leaving the option out, so it cannot turn the check off unnoticed. The anchor
+is recorded in the jungle block's regenerate command, so rerunning that command keeps the table too.
 
 ### Editions
 
@@ -431,23 +472,45 @@ than the shared one does: a product the shared jungle maps but the edition's doe
 **shared** per-size icon, because the shared entry outranks any directory on the base resource path.
 The edition's `--check` reports that product as unmapped.
 
-`--jungle` and `--icon-root` go together, and generating for an edition needs `--fallback-icon PATH`
-or `--no-fallback-icon`. Either one alone would fall back to the shared default for the rest, and
-overwrite the shared edition's icons or mapping. For the same reason, the command refuses to replace a
-generated block that maps into a different directory than the one it was given, and checks every path
-before it writes anything. Each block's comment carries the command line that regenerates it.
+`--jungle` and `--icon-root` go together: either one alone would fall back to the shared default for
+the other, and overwrite the shared edition's icons or mapping. For the same reason, the command
+refuses to replace a generated block that maps into a different directory than the one it was given,
+and checks every path before it writes anything. Each block's comment carries the command line that
+regenerates it.
+
+An edition has no default fallback icon, since the default path is the shared edition's, so
+generating for an edition needs `--fallback-icon PATH` or `--no-fallback-icon`. The library behaves
+the same: `set_jungle()` and `set_icon_root()` without `set_fallback_path()` or
+`set_fallback_icon(False)` refuse to generate.
 
 `--check` and `--table` take the same options, so each edition is checked on its own. A mapping entry
-pointing into another edition's directory does not count as a mapping for this one.
+pointing into another edition's directory does not count as a mapping for this one. An edition's
+`--check` given no `--fallback-icon PATH` does not check a fallback at all, rather than check the
+shared edition's.
+
+The README table is per invocation too, like the manifest and the jungle. An edition whose devices or
+sizes differ from the shared one's gives its own `--readme-anchor`, in the same README or another one,
+and gets a table of its own. An edition with the same mapping can be given the shared table's anchor,
+so that its `--check` verifies that one table against both mappings, or no anchor at all. Two
+editions sharing one anchor must map every product alike: otherwise each generation rewrites the
+other's table, and the other's `--check` fails.
 
 ### Checking
 
 `--check` verifies that the jungle exists, that every product in the manifest has a mapping, that no
 mapping names a product outside it, that every icon is the size its directory promises, that each
-declares `LauncherIcon`, that no icon directory is left unmapped, and — when the SDK is installed —
-that every mapping matches the size the SDK declares for that device. It needs no SDK: the committed
-mapping is itself the device-to-size table, and the SDK is used only to cross-check it. Hook it into
-the watch face's own `Makefile` and it fails the build when the device list and the icons drift apart.
+declares `LauncherIcon`, that the fallback icon exists and is as large as the largest size mapped,
+that no icon directory is left unmapped, that the README table agrees with the mapping (with
+`--readme-anchor`), and — when the SDK is installed — that every mapping matches the size the SDK
+declares for that device. It needs no SDK: the committed mapping is itself
+the device-to-size table, the fallback's size is read from it too, and the SDK is used only to
+cross-check the mapping. Hook it into the watch face's own `Makefile` and it fails the build when the
+device list and the icons drift apart.
+
+**`--check` must repeat the fallback options used for generation**, `--no-fallback-icon` or
+`--fallback-icon PATH`, as it repeats `--manifest`, `--jungle` and `--icon-root`. Without them it looks
+for the fallback at the default path: a shared edition generated with `--no-fallback-icon` or a
+different `--fallback-icon` then fails, and an edition's fallback goes unchecked.
 
 ## Installation
 
@@ -656,8 +719,8 @@ garmin-graphics-generator icons --help
 # Output
 usage: garmin-graphics-generator icons [-h] [-p PROJECT_DIRECTORY] [-d DEVICES_DIRECTORY] [-R RENDERER]
                                        [--manifest MANIFEST] [--jungle JUNGLE] [--icon-root ICON_ROOT]
-                                       [--fallback-icon PATH | --no-fallback-icon] [--check | --table]
-                                       [-v | -q]
+                                       [--fallback-icon PATH | --no-fallback-icon] [--readme PATH]
+                                       [--readme-anchor TEXT] [--check | --table] [-v | -q]
 
 options:
   -h, --help            show this help message and exit
@@ -676,9 +739,13 @@ options:
   --icon-root ICON_ROOT
                         Directory holding the resources-icon-<size>/ directories (default: the project
                         directory); give it with --jungle
-  --fallback-icon PATH  Where to write the fallback icon, drawn at the largest size (default:
-                        resources/drawables/launcher_icon.png)
-  --no-fallback-icon    Do not write the fallback icon
+  --fallback-icon PATH  Where the fallback icon, drawn at the largest size, is written and checked
+                        (default: resources/drawables/launcher_icon.png; an edition has none)
+  --no-fallback-icon    Do not write the fallback icon, nor check it
+  --readme PATH         README holding the icon size table (default: README.md)
+  --readme-anchor TEXT  Text the README's icon size table follows, such as the sentence introducing it;
+                        the table is rewritten on generation and checked by --check (default: no README
+                        table)
   --check               Verify the committed icons and mapping; exit non-zero on a problem
   --table               Print the product to icon size table as markdown
   -v, --verbose         Enable verbose output
@@ -713,8 +780,10 @@ from garmin_graphics_generator import LauncherIconGenerator
     LauncherIconGenerator()
     .set_project_directory("../my-watch-face")
     .set_renderer(my_render)          # size -> a square PIL image of that size
+    .set_readme_anchor("Each supported product is mapped to the icon its device asks for")
     .generate_icons()
     .write_mapping()
+    .write_readme()                   # does nothing without an anchor
 )
 ```
 

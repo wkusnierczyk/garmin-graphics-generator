@@ -33,6 +33,7 @@ from .constants import (
     MANIFEST_NAME,
     MAX_COVERAGE,
     MIN_COVERAGE,
+    README_NAME,
 )
 from .launcher_icons import LauncherIconError, LauncherIconGenerator, load_renderer
 from .shots import (
@@ -248,14 +249,29 @@ def add_icons_arguments(parser: argparse.ArgumentParser):
         "--fallback-icon",
         metavar="PATH",
         help=(
-            "Where to write the fallback icon, drawn at the largest size "
-            f"(default: {FALLBACK_ICON_PATH})"
+            "Where the fallback icon, drawn at the largest size, is written and "
+            f"checked (default: {FALLBACK_ICON_PATH}; an edition has none)"
         ),
     )
     fallback.add_argument(
         "--no-fallback-icon",
         action="store_true",
-        help="Do not write the fallback icon",
+        help="Do not write the fallback icon, nor check it",
+    )
+    parser.add_argument(
+        "--readme",
+        default=README_NAME,
+        metavar="PATH",
+        help=f"README holding the icon size table (default: {README_NAME})",
+    )
+    parser.add_argument(
+        "--readme-anchor",
+        metavar="TEXT",
+        help=(
+            "Text the README's icon size table follows, such as the sentence "
+            "introducing it; the table is rewritten on generation and checked by "
+            "--check (default: no README table)"
+        ),
     )
 
     mode = parser.add_mutually_exclusive_group()
@@ -634,11 +650,15 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
         .set_project_directory(args.project_directory)
         .set_devices_directory(args.devices_directory)
         .set_fallback_icon(not args.no_fallback_icon)
-        .set_fallback_path(args.fallback_icon or FALLBACK_ICON_PATH)
         .set_manifest(args.manifest)
         .set_jungle(args.jungle or JUNGLE_NAME)
         .set_icon_root(args.icon_root or "")
+        .set_readme_anchor(args.readme_anchor, args.readme)
     )
+    # Left unset when not given: the default is the shared edition's, and an edition
+    # has none, which generation refuses and the check skips.
+    if args.fallback_icon is not None:
+        generator.set_fallback_path(args.fallback_icon)
 
     # An edition is a jungle and an icon root together. Either one alone falls back
     # to the shared default for the other, and generating then overwrites the shared
@@ -666,14 +686,10 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
 
     if not args.renderer:
         parser.error("-R/--renderer is required to generate icons")
-    # The default fallback path is the shared edition's.
-    if edition and args.fallback_icon is None and not args.no_fallback_icon:
-        parser.error(
-            "generating for an edition needs --fallback-icon PATH or --no-fallback-icon"
-        )
-
-    generator.set_renderer(load_renderer(args.renderer))
-    generator.generate_icons().write_mapping()
+    # Validated before the renderer is loaded, so a mistake in the paths is reported
+    # as itself rather than as whatever loading the renderer runs into.
+    generator.validate().set_renderer(load_renderer(args.renderer))
+    generator.generate_icons().write_mapping().write_readme()
     return 0
 
 
