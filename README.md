@@ -425,8 +425,9 @@ nothing below. `--check` reads back exactly the same lines, so it never checks a
 not write. It fails on every product the table and the committed mapping disagree on, on any row that
 does not read as a product and a size, and on a product listed twice.
 
-The README is `README.md` in the project unless `--readme PATH` says otherwise, and keeps its own line
-endings. Generation checks the anchor before it writes anything.
+The README is `README.md` in the project unless `--readme PATH` says otherwise. Every line outside the
+table keeps its own line ending, and the table's lines end as the anchor's line does. Generation checks
+the anchor before it writes anything.
 
 Without `--readme-anchor` the README is neither written nor checked. The anchor is recorded in the
 jungle block's regenerate command, so rerunning that command keeps the table too.
@@ -469,13 +470,16 @@ than the shared one does: a product the shared jungle maps but the edition's doe
 **shared** per-size icon, because the shared entry outranks any directory on the base resource path.
 The edition's `--check` reports that product as unmapped.
 
-`--jungle` and `--icon-root` go together, and an edition has no default fallback icon: the default
-path is the shared edition's, so generating for an edition needs `--fallback-icon PATH` or
-`--no-fallback-icon`. Leaving out either would fall back to the shared default for the rest, and
-overwrite the shared edition's icons or mapping. The library behaves the same: `set_jungle()` and
-`set_icon_root()` without `set_fallback_path()` or `set_fallback_icon(False)` refuse to generate. For the same reason, the command refuses to replace a
-generated block that maps into a different directory than the one it was given, and checks every path
-before it writes anything. Each block's comment carries the command line that regenerates it.
+`--jungle` and `--icon-root` go together: either one alone would fall back to the shared default for
+the other, and overwrite the shared edition's icons or mapping. For the same reason, the command
+refuses to replace a generated block that maps into a different directory than the one it was given,
+and checks every path before it writes anything. Each block's comment carries the command line that
+regenerates it.
+
+An edition has no default fallback icon, since the default path is the shared edition's, so
+generating for an edition needs `--fallback-icon PATH` or `--no-fallback-icon`. The library behaves
+the same: `set_jungle()` and `set_icon_root()` without `set_fallback_path()` or
+`set_fallback_icon(False)` refuse to generate.
 
 `--check` and `--table` take the same options, so each edition is checked on its own. A mapping entry
 pointing into another edition's directory does not count as a mapping for this one. An edition's

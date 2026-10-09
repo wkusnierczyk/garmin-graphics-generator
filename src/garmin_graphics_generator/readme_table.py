@@ -5,6 +5,9 @@ The table is located by an anchor the project supplies, typically the sentence
 introducing it, and is the run of ``|`` lines directly under that line. Both the
 writer and the reader find it the same way, so the check never reads a table the
 generator would not write.
+
+Texts are split on "\\n" alone, so a line keeps a "\\r" it ends with: every line
+outside the table is written back exactly as it was, whatever its ending.
 """
 import re
 from typing import Dict, List, NamedTuple, Optional, Tuple
@@ -39,6 +42,7 @@ def anchor_line(lines: List[str], anchor: Optional[str]) -> int:
     found: List[int] = []
     fence: Optional[str] = None
     for index, line in enumerate(lines):
+        line = line.rstrip("\r")
         opening = FENCE_PATTERN.match(line)
         if fence is not None:
             # Closed by a run of the same character, at least as long.
@@ -88,20 +92,24 @@ def splice_table(text: str, anchor: str, rendered: str) -> str:
     line with only blank lines between. When anything else follows, a table is
     inserted directly after the anchor's line, set off by a blank line on either
     side, and nothing further down is touched.
+
+    The table's lines end as the anchor's line does; every other line keeps its
+    own ending, byte for byte.
     """
     lines = text.split("\n")
     anchor_index = anchor_line(lines, anchor)
-    rows = rendered.rstrip("\n").split("\n")
+    ending = "\r" if lines[anchor_index].endswith("\r") else ""
+    rows = [row + ending for row in rendered.rstrip("\n").split("\n")]
     span = _table_span(lines, anchor_index)
     if span is not None:
         start, end = span
     else:
-        # The blank lines after the anchor fold into the one that sets the table
-        # off, so the text reads the same whatever spacing it had.
         start = end = anchor_index + 1
-        while end < len(lines) and not lines[end].strip():
-            end += 1
-        rows = [""] + rows + [""]
+        rows = [ending] + rows
+        # The blank lines already after the anchor, if any, set the table off
+        # from what follows; otherwise one is added.
+        if start < len(lines) and lines[start].strip():
+            rows.append(ending)
     return "\n".join(lines[:start] + rows + lines[end:])
 
 

@@ -1228,3 +1228,35 @@ def test_a_shared_fallback_elsewhere_is_checked_where_it_is(tmp_path):
     assert failures == [f"{os.path.join(str(project), FALLBACK)} is missing"]
     report = generator(project, devices).set_fallback_path(elsewhere).check()
     assert not failures_of(report)
+
+
+# ------------------------------------------------------------------- line endings
+
+
+def test_mixed_line_endings_are_kept_outside_the_table(tmp_path):
+    project, devices = make_project(tmp_path)
+    original = b"# A\nline lf\r\nIcon sizes:\nafter crlf\r\nafter lf\n"
+    (project / "README.md").write_bytes(original)
+    with_anchor(project, devices, "Icon sizes").generate_icons().write_mapping()
+    with_anchor(project, devices, "Icon sizes").write_readme()
+    written = (project / "README.md").read_bytes()
+    # The anchor's line ends in "\n", and so do the table's.
+    inserted = b"\n" + TABLE_TEXT.encode() + b"\n"
+    assert written == original.replace(b"Icon sizes:\n", b"Icon sizes:\n" + inserted)
+    assert not failures_of(with_anchor(project, devices, "Icon sizes").check())
+
+
+def test_the_table_ends_its_lines_as_the_anchor_does():
+    text = "# A\nIcon sizes:\r\n\r\n| old |\r\nafter\n"
+    spliced = splice_table(text, "Icon sizes", TABLE_TEXT)
+    assert spliced == (
+        "# A\nIcon sizes:\r\n\r\n" + TABLE_TEXT.replace("\n", "\r\n") + "after\n"
+    )
+    assert read_table(spliced, "Icon sizes") == Table(ROWS, [])
+
+
+def test_a_fence_closes_in_crlf_text():
+    text = "```\r\nIcon sizes in code\r\n```\r\nIcon sizes per device:\r\n"
+    spliced = splice_table(text, "Icon sizes", TABLE_TEXT)
+    assert spliced == (text + "\r\n" + TABLE_TEXT.replace("\n", "\r\n"))
+    assert read_table(spliced, "Icon sizes") == Table(ROWS, [])

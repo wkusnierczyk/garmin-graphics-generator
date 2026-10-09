@@ -532,9 +532,9 @@ class LauncherIconGenerator:
 
     # ------------------------------------------------------------------- README
 
-    def _read_readme(self) -> Tuple[str, str]:
+    def _read_readme(self) -> str:
         """
-        The README's text with its line endings as "\\n", and the line ending it uses.
+        The README's text, its line endings as they are in the file.
 
         Raises when the README is missing, or the anchor does not begin exactly one
         line of it outside code.
@@ -545,15 +545,13 @@ class LauncherIconGenerator:
         # Untranslated, so the file is written back with the endings it had.
         with open(readme, "r", encoding="utf-8", newline="") as handle:
             text = handle.read()
-        newline = "\r\n" if "\r\n" in text else "\n"
-        text = text.replace("\r\n", "\n")
         try:
             anchor_line(text.split("\n"), self._readme_anchor)
         except ReadmeTableError as error:
             raise LauncherIconError(
                 f"{self._readme}: {error}; check --readme-anchor"
             ) from error
-        return text, newline
+        return text
 
     def write_readme(self) -> "LauncherIconGenerator":
         """
@@ -567,12 +565,12 @@ class LauncherIconGenerator:
         self.validate()
         if not self._sizes:
             self.resolve_sizes()
-        text, newline = self._read_readme()
+        text = self._read_readme()
         spliced = splice_table(text, self._readme_anchor, table(self._sizes))
         with open(
             self._path(self._readme), "w", encoding="utf-8", newline=""
         ) as handle:
-            handle.write(spliced.replace("\n", newline))
+            handle.write(spliced)
         logger.info("tabulated %d products in %s", len(self._sizes), self._readme)
         return self
 
@@ -584,7 +582,7 @@ class LauncherIconGenerator:
         """
         if self._readme_anchor is None:
             return None
-        return read_table(self._read_readme()[0], self._readme_anchor)
+        return read_table(self._read_readme(), self._readme_anchor)
 
     def mapping(self) -> Dict[str, int]:
         """
