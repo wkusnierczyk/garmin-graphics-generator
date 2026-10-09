@@ -323,6 +323,12 @@ def make_zone(directory, name, rule="JST-9"):
     return path
 
 
+def make_database(directory):
+    """A zone database: a directory holding UTC, which is how one is told apart."""
+    make_zone(directory, "UTC", "UTC0")
+    return directory
+
+
 def capture_command(tmp_path, monkeypatch, **options):
     """The docker run command run_simulator would issue, and its work directory."""
     monkeypatch.setattr(shots, "docker_available", lambda: True)
@@ -402,17 +408,19 @@ class TestResolveTimezone:
     def test_a_rule_glibc_would_misread_is_an_error(self, tmp_path, value):
         """glibc clamps ABC999 to UTC-24 and runs it, rather than refusing."""
         with pytest.raises(ShotsError, match="unknown time zone"):
-            resolve_timezone(value, [str(tmp_path)])
+            resolve_timezone(value, [str(make_database(tmp_path))])
 
     @pytest.mark.parametrize(
         "value", ["Mars/Olympus", "Asia", "../Asia/Tokyo", "/Asia/Tokyo", "", "Asia/"]
     )
     def test_an_unknown_name_is_an_error_not_utc(self, tmp_path, value):
+        make_database(tmp_path)
         make_zone(tmp_path, "Asia/Tokyo")
         with pytest.raises(ShotsError, match="unknown time zone"):
             resolve_timezone(value, [str(tmp_path)])
 
     def test_a_file_that_is_not_a_zone_does_not_resolve(self, tmp_path):
+        make_database(tmp_path)
         (tmp_path / "Odd").write_bytes(b"not a zone\n")
         with pytest.raises(ShotsError, match="unknown time zone"):
             resolve_timezone("Odd", [str(tmp_path)])
@@ -432,7 +440,7 @@ class TestResolveTimezone:
     @pytest.mark.parametrize("value", ["..\\Asia\\Tokyo", "Asia\\..\\..\\Odd"])
     def test_a_backslash_cannot_leave_the_database(self, tmp_path, value):
         """A separator on Windows: the zone outside the database is not read."""
-        (tmp_path / "db").mkdir()
+        make_database(tmp_path / "db")
         make_zone(tmp_path, "Asia/Tokyo")
         make_zone(tmp_path, "Odd")
         with pytest.raises(ShotsError, match="unknown time zone"):
@@ -442,6 +450,12 @@ class TestResolveTimezone:
         """Not "unknown": the name may be right, and the fix is to install one."""
         with pytest.raises(ShotsError, match="no zone database"):
             resolve_timezone("Asia/Tokyo", [str(tmp_path / "none")])
+
+    def test_an_empty_directory_on_the_path_is_no_database(self, tmp_path):
+        """A directory on TZPATH that exists, but holds no zones, is still none."""
+        (tmp_path / "Asia").mkdir()
+        with pytest.raises(ShotsError, match="no zone database"):
+            resolve_timezone("Asia/Tokyo", [str(tmp_path)])
 
     def test_the_tzdata_package_is_searched_last(self, tmp_path, monkeypatch):
         package = tmp_path / "tzdata"
@@ -514,6 +528,7 @@ class TestTimezoneInTheContainer:
 
     def test_an_unknown_name_stops_before_docker(self, tmp_path, monkeypatch):
         started = []
+        make_database(tmp_path)
         monkeypatch.setattr(shots, "_zone_directories", lambda: [str(tmp_path)])
         monkeypatch.setattr(shots, "docker_available", lambda: started.append("docker"))
         with pytest.raises(ShotsError, match="unknown time zone"):

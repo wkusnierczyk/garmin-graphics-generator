@@ -365,6 +365,16 @@ def _is_zone_file(path: str) -> bool:
         return False
 
 
+def _is_zone_database(directory: str) -> bool:
+    """
+    Whether ``directory`` holds a zone database, rather than merely existing.
+
+    Probed with UTC, which every database has: an empty or stray directory on the
+    search path is no database, and a name missing from it is not "unknown".
+    """
+    return _is_zone_file(os.path.join(directory, "UTC"))
+
+
 def _zone_parts(name: str) -> Optional[List[str]]:
     """
     ``name``'s path components within a zone database, or None if it leaves one.
@@ -409,7 +419,7 @@ def resolve_timezone(
     # glibc reads ``:JST-9`` as a rule too, once no file by that name is found.
     if _is_posix_rule(name):
         return TimeZone(rule=name)
-    if not any(os.path.isdir(directory) for directory in directories):
+    if not any(_is_zone_database(directory) for directory in directories):
         raise ShotsError(
             f"cannot look up time zone {value!r}: this host has no zone database; "
             "install the tzdata package, or give a POSIX TZ rule such as JST-9"
