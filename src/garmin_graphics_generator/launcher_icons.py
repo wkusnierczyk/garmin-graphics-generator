@@ -176,7 +176,14 @@ def rebase_specification(specification: str, start: str) -> str:
         if not path.endswith(".py"):
             return specification
         prefix, suffix = "", colon + attribute
-    absolute, start = os.path.abspath(path), os.path.abspath(start)
+    # Directories through symlinks resolved, as the working directory already is, or a
+    # path inside the project reached through one would read as outside it. The file
+    # itself is not resolved: a renderer linked into the project is named where it is.
+    absolute = os.path.join(
+        os.path.realpath(os.path.dirname(os.path.abspath(path))),
+        os.path.basename(path),
+    )
+    start = os.path.realpath(start)
     try:
         relative = os.path.relpath(absolute, start)
     except ValueError:  # different drives, on Windows

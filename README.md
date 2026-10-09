@@ -405,7 +405,8 @@ command names it relative to the project instead: `-p ../my-watch-face -R ../my-
 records `-R tools/icon.py`. An absolute path inside the project is recorded the same way, so the
 committed jungle does not carry one machine's layout; a module, and an absolute path outside the
 project, are recorded as given. A renderer passed to `LauncherIconGenerator.set_renderer` as a Python
-callable is recorded only when its specification is passed too, as `set_renderer(render, "tools/icon.py")`.
+callable is recorded only when its specification is passed too, written as `-R` takes it, from the
+current directory: `set_renderer(render, "../my-watch-face/tools/icon.py")` records `-R tools/icon.py`.
 
 ### The README table
 
@@ -792,7 +793,8 @@ from garmin_graphics_generator import LauncherIconGenerator
     LauncherIconGenerator()
     .set_project_directory("../my-watch-face")
     .set_renderer(my_render)          # size -> a square PIL image of that size;
-                                      # a second argument, its specification, is
+                                      # a second argument, its specification as -R
+                                      # takes it from the current directory, is
                                       # recorded in the regenerate command
     .set_readme_anchor("Each supported product is mapped to the icon its device asks for")
     .generate_icons()

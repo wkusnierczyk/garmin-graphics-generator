@@ -763,6 +763,15 @@ def test_a_file_where_the_fallback_goes_fails_before_anything_is_written(tmp_pat
     assert not (project / "premium" / "resources-icon-70").exists()
 
 
+def regenerate_command(jungle):
+    """The command a generated block records, as it would be pasted."""
+    return next(
+        line.split("Regenerate with: ", 1)[1]
+        for line in jungle.splitlines()
+        if "Regenerate with" in line
+    )
+
+
 def test_the_recorded_command_reruns_for_a_jungle_in_a_subdirectory(tmp_path):
     project, devices = make_project(tmp_path)
     (project / "sub").mkdir()
@@ -771,11 +780,7 @@ def test_the_recorded_command_reruns_for_a_jungle_in_a_subdirectory(tmp_path):
         "resources/drawables/launcher_icon.png"
     ).generate_icons().write_mapping()
     jungle = (project / "sub" / "icons.jungle").read_text()
-    command = next(
-        line.split("Regenerate with: ", 1)[1]
-        for line in jungle.splitlines()
-        if "Regenerate with" in line
-    )
+    command = regenerate_command(jungle)
     assert command == (
         "garmin-graphics-generator icons --jungle sub/icons.jungle --icon-root ."
         " --fallback-icon resources/drawables/launcher_icon.png"
@@ -796,15 +801,6 @@ def test_the_recorded_command_reruns_for_a_jungle_in_a_subdirectory(tmp_path):
     )
 
 
-def regenerate_command(jungle):
-    """The command a generated block records, as it would be pasted."""
-    return next(
-        line.split("Regenerate with: ", 1)[1]
-        for line in jungle.splitlines()
-        if "Regenerate with" in line
-    )
-
-
 def test_a_renderer_specification_is_rebased_onto_the_project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert rebase_specification("project/tools/icon.py", "project") == "tools/icon.py"
@@ -815,6 +811,23 @@ def test_a_renderer_specification_is_rebased_onto_the_project(tmp_path, monkeypa
     # An absolute path under the project would tie the jungle to one machine.
     inside = str(tmp_path / "project" / "icon.py")
     assert rebase_specification(inside, "project") == "icon.py"
+    assert rebase_specification("./project/tools/icon.py", "project") == "tools/icon.py"
+    assert (
+        rebase_specification("shared/icon.py:draw", "project")
+        == "../shared/icon.py:draw"
+    )
+
+
+def test_a_renderer_specification_is_rebased_through_symlinks(tmp_path, monkeypatch):
+    (tmp_path / "real" / "project").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    monkeypatch.chdir(tmp_path / "real")
+    # An absolute path into the project through a link is still inside it ...
+    linked = str(tmp_path / "link" / "project" / "tools" / "icon.py")
+    assert rebase_specification(linked, "project") == "tools/icon.py"
+    # ... and a project named through a link is the same project.
+    project = str(tmp_path / "link" / "project")
+    assert rebase_specification("project/tools/icon.py", project) == "tools/icon.py"
 
 
 def test_a_renderer_specification_that_reads_the_same_anywhere_is_kept(tmp_path):
@@ -842,13 +855,16 @@ def test_the_recorded_command_names_a_renderer_given_with_its_specification(tmp_
 def test_the_recorded_command_reruns_with_its_renderer(tmp_path, monkeypatch):
     project, devices = make_project(tmp_path)
     make_edition(project)
-    (project / "tools").mkdir()
-    (project / "tools" / "icon.py").write_text(
+    # One renderer inside the project, and the edition's in a directory beside it.
+    source = (
         "from PIL import Image\n"
         "def render(size):\n"
         "    return Image.new('RGB', (size, size), 'green')\n"
     )
-    # Generated from outside the project, with the renderer found from there ...
+    for directory in (project / "tools", tmp_path / "shared"):
+        directory.mkdir()
+        (directory / "icon.py").write_text(source)
+    # Generated from outside the project, with the renderers found from there ...
     monkeypatch.chdir(tmp_path)
     options = ["icons", "-p", "project", "-d", str(devices), "-q"]
     edition_options = [
@@ -861,18 +877,20 @@ def test_the_recorded_command_reruns_with_its_renderer(tmp_path, monkeypatch):
         "--no-fallback-icon",
     ]
     assert main(options + ["-R", "project/tools/icon.py"]) == 0
-    assert main(options + edition_options + ["-R", "project/tools/icon.py"]) == 0
+    assert main(options + edition_options + ["-R", "shared/icon.py"]) == 0
     jungles = {
         name: (project / name).read_text()
         for name in ("monkey.jungle", "premium.jungle")
     }
     # ... and rerun from inside it, pasted as recorded.
     monkeypatch.chdir(project)
-    for (name, jungle), icon in zip(
-        jungles.items(), ["resources-icon-70", "premium/resources-icon-70"]
+    for (name, jungle), icon, renderer in zip(
+        jungles.items(),
+        ["resources-icon-70", "premium/resources-icon-70"],
+        ["tools/icon.py", "../shared/icon.py"],
     ):
         command = regenerate_command(jungle)
-        assert shlex.split(command)[2:4] == ["-R", "tools/icon.py"]
+        assert shlex.split(command)[2:4] == ["-R", renderer]
         (project / icon / "drawables" / "launcher_icon.png").unlink()
         assert main(shlex.split(command)[1:] + ["-d", str(devices), "-q"]) == 0
         assert (project / icon / "drawables" / "launcher_icon.png").exists()
