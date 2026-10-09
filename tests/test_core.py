@@ -130,11 +130,14 @@ def test_a_resized_width_of_one_is_accepted():
     assert WatchHeroGenerator().set_resized_width(1)._resized_width == 1
 
 
+@pytest.mark.parametrize("command", [["hero"], []], ids=["hero", "legacy"])
 @pytest.mark.parametrize("value", ["0", "-1", "10.5", "wide"])
-def test_the_cli_refuses_a_resized_width_below_one(tmp_path, capsys, value):
+def test_the_cli_refuses_a_resized_width_below_one_or_not_whole(
+    tmp_path, capsys, command, value
+):
     """#42: the CLI gives a usage error, not a traceback."""
     with pytest.raises(SystemExit) as raised:
-        cli.main(["hero", "-o", str(tmp_path / "o"), "-w", value, "w.png"])
+        cli.main(command + ["-o", str(tmp_path / "o"), "-w", value, "w.png"])
     assert raised.value.code == 2
     error = capsys.readouterr().err
     assert "--resized-file-width" in error

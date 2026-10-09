@@ -192,7 +192,7 @@ def add_hero_arguments(parser: argparse.ArgumentParser):
         "--resized-file-width",
         type=counted(1),
         default=200,
-        help="Width of resized files",
+        help="Width in pixels of resized files, at least 1 (default: 200)",
     )
 
     add_verbosity(parser)
