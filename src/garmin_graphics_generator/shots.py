@@ -29,6 +29,7 @@ installed can still run this.
 The container is what makes the command portable: the same capture runs on a
 developer's machine and in CI, and needs no screen-recording permission on either.
 """
+import importlib.util
 import logging
 import os
 import re
@@ -261,6 +262,100 @@ def _check_timings(
             raise ShotsError(f"{name} must be positive, not {value}")
 
 
+# Where to look for a zone file when the zoneinfo module, which is Python 3.9's,
+# cannot say: its own default search path.
+_FALLBACK_TZPATH = (
+    "/usr/share/zoneinfo",
+    "/usr/lib/zoneinfo",
+    "/usr/share/lib/zoneinfo",
+    "/etc/zoneinfo",
+)
+
+# A POSIX TZ rule, which glibc reads without a zone database: a standard name and
+# offset, then optionally a daylight name, its offset, and the two dates between
+# which it applies. ``EST5``, ``MSK-3``, ``<+0530>-5:30``, ``EST5EDT,M3.2.0,M11.1.0``.
+_POSIX_NAME = r"(?:[A-Za-z]{3,}|<[A-Za-z0-9+-]{3,}>)"
+_POSIX_OFFSET = r"[+-]?\d{1,3}(?::\d{2}){0,2}"
+_POSIX_DATE = r"(?:J\d{1,3}|\d{1,3}|M\d{1,2}\.\d\.\d)(?:/[+-]?\d{1,3}(?::\d{2}){0,2})?"
+_POSIX_TZ = re.compile(
+    rf"{_POSIX_NAME}{_POSIX_OFFSET}"
+    rf"(?:{_POSIX_NAME}(?:{_POSIX_OFFSET})?(?:,{_POSIX_DATE},{_POSIX_DATE})?)?"
+)
+
+
+def _zone_directories() -> List[str]:
+    """The host's zone databases, in the order zoneinfo would search them."""
+    try:
+        import zoneinfo  # pylint: disable=import-outside-toplevel
+
+        directories = list(zoneinfo.TZPATH)
+    except ImportError:
+        directories = list(_FALLBACK_TZPATH)
+    # The tzdata package is the database on a host that has none of its own.
+    spec = importlib.util.find_spec("tzdata")
+    if spec is not None and spec.origin:
+        directories.append(os.path.join(os.path.dirname(spec.origin), "zoneinfo"))
+    return directories
+
+
+def _zone_rule(path: str) -> Optional[str]:
+    """
+    The POSIX rule at the end of a TZif file, or None if it carries none.
+
+    From version 2 on, a TZif file ends in a newline-enclosed footer that is the
+    zone's rule for every time after its last transition. A version 1 file has no
+    footer, and an empty one means the zone has no rule to give.
+    """
+    try:
+        with open(path, "rb") as stream:
+            data = stream.read()
+    except OSError:
+        return None
+    if (
+        not data.startswith(b"TZif")
+        or data[4:5] in (b"\0", b"")
+        or not data.endswith(b"\n")
+    ):
+        return None
+    footer = data[:-1].rsplit(b"\n", 1)[-1]
+    try:
+        rule = footer.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    return rule or None
+
+
+def resolve_timezone(value: str, directories: Optional[Sequence[str]] = None) -> str:
+    """
+    Turns ``value`` into a TZ the tester image can honour, or raises ShotsError.
+
+    The image has no zone database, and glibc meets a zone name it cannot find a
+    file for by running at UTC, silently. A POSIX rule needs no file, so a name is
+    looked up here, on the host, and replaced with the rule its zone file ends in:
+    ``Asia/Tokyo`` becomes ``JST-9``. A value that is already a rule is passed
+    through as it is.
+    """
+    text = value.strip()
+    if _POSIX_TZ.fullmatch(text):
+        return text
+    # glibc's own spelling of "this is a file name", which changes nothing here.
+    name = text[1:] if text.startswith(":") else text
+    parts = name.split("/")
+    if (
+        name
+        and not os.path.isabs(name)
+        and all(part not in ("", os.curdir, os.pardir) for part in parts)
+    ):
+        for directory in _zone_directories() if directories is None else directories:
+            rule = _zone_rule(os.path.join(directory, *parts))
+            if rule is not None:
+                return rule
+    raise ShotsError(
+        f"unknown time zone {value!r}: give a zone name such as Asia/Tokyo, or a "
+        "POSIX TZ rule such as JST-9"
+    )
+
+
 def _clear_previous_run(work_directory: str) -> None:
     """
     Removes what an earlier run left in an explicitly named work directory.
@@ -395,6 +490,11 @@ def run_builds(
         raise ShotsError("nothing to build")
     if prg is not None and (len(builds) > 1 or builds[0].files):
         raise ShotsError("a prebuilt .prg cannot be varied; build from the project")
+    if timezone is not None:
+        rule = resolve_timezone(timezone)
+        if rule != timezone:
+            logger.info("Time zone %s is %s", timezone, rule)
+        timezone = rule
 
     if not docker_available():
         raise ShotsError(

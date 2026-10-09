@@ -6,7 +6,12 @@ from PIL import Image
 
 from garmin_graphics_generator import shots
 from garmin_graphics_generator.capture import DeviceRender
-from garmin_graphics_generator.shots import ShotsError, cut_frames, run_simulator
+from garmin_graphics_generator.shots import (
+    ShotsError,
+    cut_frames,
+    resolve_timezone,
+    run_simulator,
+)
 
 from .test_capture import SCREEN, make_device, make_xwd, place
 
@@ -303,6 +308,120 @@ class TestRunSimulatorArguments:
             run_simulator(
                 str(project), "testwatch", str(tmp_path / "work"), jungle="  "
             )
+
+
+def make_zone(directory, name, rule, version=b"2"):
+    """Writes a TZif file whose footer is `rule`, with binary noise before it."""
+    path = directory.joinpath(*name.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = b"TZif" + version + b"\0" * 15 + b"\x0a\x00\xff\x0a" * 4
+    if version != b"\0":
+        body += b"\n" + rule.encode("ascii") + b"\n"
+    path.write_bytes(body)
+    return path
+
+
+class TestResolveTimezone:
+    """The tester image has no zone database, so a name has to become a rule."""
+
+    @pytest.mark.parametrize(
+        "name, rule",
+        [
+            ("Asia/Tokyo", "JST-9"),
+            ("America/New_York", "EST5EDT,M3.2.0,M11.1.0"),
+            ("Asia/Kolkata", "IST-5:30"),
+            ("UTC", "UTC0"),
+        ],
+    )
+    def test_a_name_becomes_its_zone_files_rule(self, tmp_path, name, rule):
+        make_zone(tmp_path, name, rule)
+        assert resolve_timezone(name, [str(tmp_path)]) == rule
+
+    def test_glibcs_leading_colon_is_a_name_too(self, tmp_path):
+        make_zone(tmp_path, "Asia/Tokyo", "JST-9")
+        assert resolve_timezone(":Asia/Tokyo", [str(tmp_path)]) == "JST-9"
+
+    def test_the_first_database_that_has_the_zone_wins(self, tmp_path):
+        first, second = tmp_path / "first", tmp_path / "second"
+        first.mkdir()
+        make_zone(second, "Asia/Tokyo", "JST-9")
+        assert resolve_timezone("Asia/Tokyo", [str(first), str(second)]) == "JST-9"
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "EST5",
+            "MSK-3",
+            "EST5EDT,M3.2.0,M11.1.0",
+            "<+0530>-5:30",
+            "CET-1CEST,M3.5.0,M10.5.0/3",
+        ],
+    )
+    def test_a_rule_passes_through(self, tmp_path, rule):
+        assert resolve_timezone(rule, [str(tmp_path)]) == rule
+
+    @pytest.mark.parametrize(
+        "value", ["Mars/Olympus", "Asia", "../Asia/Tokyo", "/Asia/Tokyo", "", "Asia/"]
+    )
+    def test_an_unknown_name_is_an_error_not_utc(self, tmp_path, value):
+        make_zone(tmp_path, "Asia/Tokyo", "JST-9")
+        with pytest.raises(ShotsError, match="unknown time zone"):
+            resolve_timezone(value, [str(tmp_path)])
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"TZif\0" + b"\0" * 40 + b"\n",
+            b"TZif2" + b"\0" * 40 + b"\n\n",
+            b"not a zone\n",
+        ],
+    )
+    def test_a_file_without_a_rule_does_not_resolve(self, tmp_path, content):
+        """Version 1 has no footer; an empty footer and a stray file give none."""
+        (tmp_path / "Odd").write_bytes(content)
+        with pytest.raises(ShotsError, match="unknown time zone"):
+            resolve_timezone("Odd", [str(tmp_path)])
+
+    def test_the_hosts_own_database_is_searched_by_default(self):
+        """Wherever this runs, UTC is in its zone database or in tzdata."""
+        if not any(
+            os.path.isfile(os.path.join(d, "UTC")) for d in shots._zone_directories()
+        ):
+            pytest.skip("no zone database on this host")
+        assert resolve_timezone("UTC") == "UTC0"
+
+    def test_the_container_is_given_the_rule(self, tmp_path, monkeypatch):
+        make_zone(tmp_path / "zones", "Asia/Tokyo", "JST-9")
+        monkeypatch.setattr(
+            shots, "_zone_directories", lambda: [str(tmp_path / "zones")]
+        )
+        monkeypatch.setattr(shots, "docker_available", lambda: True)
+        project = make_project(tmp_path)
+        recorded = {}
+
+        def fake_run(command, **_):
+            recorded["command"] = command
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr(shots.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError):
+            run_simulator(
+                str(project), "testwatch", str(tmp_path / "work"), timezone="Asia/Tokyo"
+            )
+        assert "TZ=JST-9" in recorded["command"]
+
+    def test_an_unknown_name_stops_before_docker(self, tmp_path, monkeypatch):
+        started = []
+        monkeypatch.setattr(shots, "_zone_directories", lambda: [str(tmp_path)])
+        monkeypatch.setattr(shots, "docker_available", lambda: started.append("docker"))
+        with pytest.raises(ShotsError, match="unknown time zone"):
+            run_simulator(
+                str(make_project(tmp_path)),
+                "testwatch",
+                str(tmp_path / "work"),
+                timezone="Mars/Olympus",
+            )
+        assert started == []
 
 
 def test_docker_available_is_false_without_the_client(monkeypatch):

@@ -326,7 +326,10 @@ def add_shots_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--timezone",
-        help="TZ for the container, which is the time the captured face shows",
+        help=(
+            "Time zone the captured face shows: a name such as Asia/Tokyo, or a POSIX "
+            "TZ rule such as JST-9"
+        ),
     )
     parser.add_argument(
         "--timeout",
