@@ -183,14 +183,10 @@ def rebase_specification(specification: str, start: str) -> str:
         os.path.realpath(os.path.dirname(os.path.abspath(path))),
         os.path.basename(path),
     )
-    start = os.path.realpath(start)
-    try:
-        relative = os.path.relpath(absolute, start)
-    except ValueError:  # different drives, on Windows
-        return prefix + absolute + suffix
+    relative = os.path.relpath(absolute, os.path.realpath(start))
     if os.path.isabs(path) and relative.split(os.sep)[0] == os.pardir:
         return specification
-    return prefix + relative.replace(os.sep, "/") + suffix
+    return prefix + relative + suffix
 
 
 def read_png_size(path: str) -> Optional[Tuple[int, int]]:
