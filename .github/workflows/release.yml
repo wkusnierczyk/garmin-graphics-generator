@@ -9,8 +9,10 @@
 # A draft, so that publishing stays a decision taken with the notes in hand,
 # rather than something a tag push does with GitHub's generated ones.
 #
-# Every action is pinned to a commit SHA: this job holds a contents: write token,
-# and a tag like v7 is a mutable pointer.
+# Two jobs, so that the contents: write token never shares a job with code
+# fetched from PyPI: `build` installs and runs the build backend read-only, and
+# `release` only attaches what it built. Every action is pinned to a commit SHA,
+# because a tag like v7 is a mutable pointer.
 name: release
 
 on:
@@ -21,13 +23,13 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    name: draft release
+  build:
+    name: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -48,9 +50,35 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
-      # GH_REPO, because gh does not read GITHUB_REPOSITORY.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: draft release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: dist
+          path: dist
+
+      # Refuse rather than add a second draft for the same tag on a re-run: gh
+      # would then pick either one. Deleting an unwanted draft is the owner's call.
+      # GH_REPO, because this job does not check the repository out, and gh does
+      # not read GITHUB_REPOSITORY.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "$GITHUB_REF_NAME"
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::a release already exists for $GITHUB_REF_NAME; delete it if it is an unwanted draft, then re-run"
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "$GITHUB_REF_NAME"

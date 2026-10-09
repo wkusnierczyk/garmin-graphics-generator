@@ -709,7 +709,7 @@ git checkout main && git pull
 git tag -a vX.Y.Z -m 'Release X.Y.Z' && git push origin vX.Y.Z
 ```
 
-The tag push runs `.github/workflows/release.yml`, which refuses a tag that is not `v` plus the version in `pyproject.toml`, builds the sdist and the wheel, and attaches them to a *draft* release. Once `gh release view vX.Y.Z` shows the draft, publish it with the notes:
+The tag push runs `.github/workflows/release.yml`, which refuses a tag that is not `v` plus the version in `pyproject.toml`, builds the sdist and the wheel, and attaches them to a *draft* release. It refuses to run again for a tag that already has a release, so delete an unwanted draft before re-running it. Once `gh release view vX.Y.Z` shows the draft, publish it with the notes:
 
 ```bash
 gh release edit vX.Y.Z --title 'vX.Y.Z <summary>' --notes-file notes.md --draft=false
