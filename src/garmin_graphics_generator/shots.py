@@ -118,9 +118,11 @@ class Shot(NamedTuple):
 # SETTINGS/<app>.SET for the properties, DATA/<app>.DAT and .IDX for the storage.
 # <app> is the name the app was first installed under, SHOTS-1, whichever build is
 # pushed after it. Only files go; the simulator's directories stay. A removal that
-# fails stops the run, rather than capturing the last build's state unannounced as
-# the find before this one did on every run: GNU find refuses -prune with -delete,
-# and its error went to /dev/null. SIM_APPS is for running it outside the container.
+# fails stops the run with a status of its own, rather than capturing the last
+# build's state unannounced as the find before this one did on every run: GNU find
+# refuses -prune with -delete, and its error went to /dev/null. A name is printed
+# once its file is gone, so the container log lists what was removed and nothing
+# else. SIM_APPS is for running it outside the container.
 _CLEAR_APP_STATE = r"""
 APPS="${SIM_APPS:-/tmp/com.garmin.connectiq/GARMIN/APPS}"
 clear_app_state() {
@@ -128,11 +130,16 @@ clear_app_state() {
   for kept in "$APPS/SETTINGS" "$APPS/DATA"; do
     [ -d "$kept" ] || continue
     # Looked at again: BSD find can fail to delete a file and still exit 0.
-    find "$kept" -type f -print -delete && [ -z "$(find "$kept" -type f)" ] \
-      || fail "could not clear the app's settings and storage in $kept"
+    find "$kept" -type f -delete -print && [ -z "$(find "$kept" -type f)" ] || {
+      echo "shots: could not clear the app's settings and storage in $kept" >&2
+      echo "failed clearing" > "$OUT/status"
+      exit 1
+    }
   done
 }
 """
+# What the container reports when clear_app_state fails.
+CLEAR_FAILED = "failed clearing"
 
 # Run inside the container to set the capture up, then block. The X server and the
 # simulator have to outlive the step that starts them, so they cannot be launched
@@ -781,7 +788,7 @@ def _await_ready(
     wanted = f"ready {number}"
     deadline = time.monotonic() + build_timeout
     last = _read_status(status_path)
-    while last not in (wanted, "failed"):
+    while last not in (wanted, "failed", CLEAR_FAILED):
         # The deadline restarts whenever the container reports progress, so it
         # bounds one build rather than all of them: a survey of forty builds
         # under emulation is normal, and one build taking half an hour is not.
@@ -801,7 +808,13 @@ def _await_ready(
             )
         time.sleep(READY_POLL_INTERVAL)
 
-    if _read_status(status_path) != wanted:
+    status = _read_status(status_path)
+    if status == CLEAR_FAILED:
+        raise ShotsError(
+            "could not clear the simulator's settings and storage before build "
+            f"{number}:\n" + _container_log(container)
+        )
+    if status != wanted:
         raise ShotsError(
             "the container could not start the simulator:\n" + _container_log(container)
         )
