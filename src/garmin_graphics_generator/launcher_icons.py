@@ -159,6 +159,40 @@ def load_renderer(specification: str) -> Renderer:
     return renderer
 
 
+def rebase_specification(specification: str, start: str) -> str:
+    """
+    A renderer specification given from the working directory, as it reads from ``start``.
+
+    The file named by ``resample:<path>`` or ``<path>.py[:<name>]`` is found from the
+    working directory, whereas the regenerate command is run from the project, so a
+    relative path is rewritten to be relative to ``start``. So is an absolute path
+    under ``start``, which would otherwise record one machine's layout in a committed
+    jungle. Any other absolute path, and a module, are kept as they are.
+    """
+    if specification.startswith("resample:"):
+        prefix, path, suffix = "resample:", specification.split(":", 1)[1], ""
+    else:
+        path, colon, attribute = specification.partition(":")
+        if not path.endswith(".py"):
+            return specification
+        prefix, suffix = "", colon + attribute
+    # Directories through symlinks resolved, as the working directory already is, or a
+    # path inside the project reached through one would read as outside it. The file
+    # itself is not resolved: a renderer linked into the project is named where it is.
+    absolute = os.path.join(
+        os.path.realpath(os.path.dirname(os.path.abspath(path))),
+        os.path.basename(path),
+    )
+    start = os.path.realpath(start)
+    try:
+        relative = os.path.relpath(absolute, start)
+    except ValueError:  # different drives, on Windows
+        return prefix + absolute + suffix
+    if os.path.isabs(path) and relative.split(os.sep)[0] == os.pardir:
+        return specification
+    return prefix + relative.replace(os.sep, "/") + suffix
+
+
 def read_png_size(path: str) -> Optional[Tuple[int, int]]:
     """Reads (width, height) out of a PNG header, without decoding the image."""
     with open(path, "rb") as handle:
@@ -180,6 +214,7 @@ class LauncherIconGenerator:
         self._project_directory: str = "."
         self._devices_directory: str = os.path.expanduser(DEFAULT_DEVICES_DIRECTORY)
         self._renderer: Optional[Renderer] = None
+        self._renderer_specification: Optional[str] = None
         self._fallback_icon: bool = True
         self._manifest: str = MANIFEST_NAME
         self._jungle: str = JUNGLE_NAME
@@ -201,9 +236,19 @@ class LauncherIconGenerator:
         self._devices_directory = os.path.expanduser(path)
         return self
 
-    def set_renderer(self, renderer: Renderer) -> "LauncherIconGenerator":
-        """Sets the callable that draws one icon at a given edge in pixels."""
+    def set_renderer(
+        self, renderer: Renderer, specification: Optional[str] = None
+    ) -> "LauncherIconGenerator":
+        """
+        Sets the callable that draws one icon at a given edge in pixels.
+
+        ``specification`` is the string it was loaded from, as :func:`load_renderer`
+        takes it, relative to the working directory. Given, it is recorded in the
+        jungle's regenerate command, relative to the project; a callable passed
+        without one leaves the renderer out of that command.
+        """
         self._renderer = renderer
+        self._renderer_specification = specification
         return self
 
     def set_fallback_icon(self, enabled: bool) -> "LauncherIconGenerator":
@@ -325,7 +370,8 @@ class LauncherIconGenerator:
 
         An edition's carries everything the CLI requires of one -- the jungle, the
         icon root, and an explicit fallback choice -- so it can be pasted and rerun.
-        The shared edition's names only what differs from the defaults.
+        The shared edition's names only what differs from the defaults. Both name the
+        renderer when it was set with its specification, since generating needs one.
         """
         jungle = self._relative(self._jungle, "")
         root = self._root_label()
@@ -334,6 +380,13 @@ class LauncherIconGenerator:
         fallback = self._relative(fallback, "") if fallback is not None else None
 
         options = []
+        if self._renderer_specification is not None:
+            options += [
+                "-R",
+                rebase_specification(
+                    self._renderer_specification, self._project_directory
+                ),
+            ]
         if self._relative(self._manifest, "") != MANIFEST_NAME:
             options += ["--manifest", self._relative(self._manifest, "")]
         if edition:
@@ -937,6 +990,7 @@ __all__ = [
     "normalise_directory",
     "read_png_size",
     "read_table",
+    "rebase_specification",
     "resample_renderer",
     "splice",
     "splice_table",

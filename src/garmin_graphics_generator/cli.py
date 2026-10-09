@@ -688,7 +688,7 @@ def run_icons(args, parser: argparse.ArgumentParser) -> int:
         parser.error("-R/--renderer is required to generate icons")
     # Validated before the renderer is loaded, so a mistake in the paths is reported
     # as itself rather than as whatever loading the renderer runs into.
-    generator.validate().set_renderer(load_renderer(args.renderer))
+    generator.validate().set_renderer(load_renderer(args.renderer), args.renderer)
     generator.generate_icons().write_mapping().write_readme()
     return 0
 

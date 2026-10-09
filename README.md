@@ -349,7 +349,7 @@ spliced into `monkey.jungle` between generated markers. Anything outside those m
 
 ```bash
 # regenerate, resampling a master image
-garmin-graphics-generator icons -p ../my-watch-face -R resample:art/icon-512.png
+garmin-graphics-generator icons -p ../my-watch-face -R resample:../my-watch-face/art/icon-512.png
 
 # regenerate, with the project drawing its own artwork at each size
 garmin-graphics-generator icons -p ../my-watch-face -R ../my-watch-face/tools/icon.py
@@ -398,6 +398,15 @@ def render(size):
 and points at it with `-R tools/icon.py`. `-R tools/icon.py:name` picks a differently named function,
 and `-R package.module:name` loads one from an installed module. A renderer file is imported without
 writing bytecode, so no `__pycache__/` is left next to it in the project.
+
+The renderer is recorded in the generated block's regenerate command, so the command can be pasted
+and rerun from the project directory. A renderer file is found from the current directory, so the
+command names it relative to the project instead: `-p ../my-watch-face -R ../my-watch-face/tools/icon.py`
+records `-R tools/icon.py`. An absolute path inside the project is recorded the same way, so the
+committed jungle does not carry one machine's layout; a module, and an absolute path outside the
+project, are recorded as given. A renderer passed to `LauncherIconGenerator.set_renderer` as a Python
+callable is recorded only when its specification is passed too, written as `-R` takes it, from the
+current directory: `set_renderer(render, "../my-watch-face/tools/icon.py")` records `-R tools/icon.py`.
 
 ### The README table
 
@@ -783,7 +792,10 @@ from garmin_graphics_generator import LauncherIconGenerator
 (
     LauncherIconGenerator()
     .set_project_directory("../my-watch-face")
-    .set_renderer(my_render)          # size -> a square PIL image of that size
+    .set_renderer(my_render)          # size -> a square PIL image of that size;
+                                      # a second argument, its specification as -R
+                                      # takes it from the current directory, is
+                                      # recorded in the regenerate command
     .set_readme_anchor("Each supported product is mapped to the icon its device asks for")
     .generate_icons()
     .write_mapping()
