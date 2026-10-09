@@ -52,6 +52,13 @@ from .constants import (
     MANIFEST_NAME,
     README_NAME,
 )
+from .readme_table import (
+    ReadmeTableError,
+    Table,
+    anchor_line,
+    read_table,
+    splice_table,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +81,6 @@ BLOCK_PATTERN = re.compile(
     r"^# END generated launcher icon mapping[^\n]*\n?",
     re.MULTILINE | re.DOTALL,
 )
-
-# One row of the README table as :func:`table` writes it. Read as width and height, so
-# a row stating a non-square size disagrees with the mapping rather than going unread.
-TABLE_ROW_PATTERN = re.compile(r"^\|\s*(\S+)\s*\|\s*(\d+)\s*x\s*(\d+)\s*\|\s*$")
 
 Renderer = Callable[[int], Image.Image]
 
@@ -181,7 +184,7 @@ class LauncherIconGenerator:
         self._manifest: str = MANIFEST_NAME
         self._jungle: str = JUNGLE_NAME
         self._icon_root: str = ""
-        self._fallback_path: str = FALLBACK_ICON_PATH
+        self._fallback_path: Optional[str] = None
         self._readme: str = README_NAME
         self._readme_anchor: Optional[str] = None
         self._sizes: Dict[str, int] = {}
@@ -239,7 +242,10 @@ class LauncherIconGenerator:
         Sets where the fallback icon is written, relative to the project.
 
         Only the image is written. The drawables.xml declaring it belongs to the
-        project, because it may declare other bitmaps too.
+        project, because it may declare other bitmaps too. The default,
+        resources/drawables/launcher_icon.png, is the shared edition's: an edition
+        has none until it is set here, and then generation refuses to run unless
+        the fallback is turned off, and the check does not look for one.
         """
         self._fallback_path = path
         return self
@@ -250,9 +256,10 @@ class LauncherIconGenerator:
         """
         Sets the text the size table follows in ``readme``, or None for no table.
 
-        Typically the sentence introducing the table. The table is the run of ``|``
-        lines after it and before the next heading; generation rewrites it, or inserts
-        one after the anchor's line, and the check compares it with the mapping.
+        Typically the sentence introducing the table, which has to begin exactly one
+        line outside fenced code. The table is the run of ``|`` lines following that
+        line with only blank lines between; generation rewrites it, or inserts one
+        directly after the anchor's line, and the check compares it with the mapping.
         Without an anchor the README is neither written nor checked. ``readme`` is
         relative to the project.
         """
@@ -286,6 +293,26 @@ class LauncherIconGenerator:
         """The icon root relative to the project, for messages and orphan names."""
         return self._relative(self._icon_root, "")
 
+    def _is_edition(self) -> bool:
+        """Whether this is an edition: a jungle or an icon root other than the default."""
+        return (
+            self._relative(self._jungle, "") != JUNGLE_NAME or self._root_label() != ""
+        )
+
+    def _fallback(self) -> Optional[str]:
+        """
+        The fallback icon's path relative to the project, or None when there is none.
+
+        None when it is turned off, and for an edition that has not been given one:
+        the default path is the shared edition's, and checking an edition against it
+        would test another edition's file.
+        """
+        if not self._fallback_icon:
+            return None
+        if self._fallback_path is not None:
+            return self._fallback_path
+        return None if self._is_edition() else FALLBACK_ICON_PATH
+
     def _command(self) -> str:
         """
         The command line that regenerates this mapping, for the jungle's comment.
@@ -296,15 +323,16 @@ class LauncherIconGenerator:
         """
         jungle = self._relative(self._jungle, "")
         root = self._root_label()
-        edition = jungle != JUNGLE_NAME or root != ""
-        fallback = self._relative(self._fallback_path, "")
+        edition = self._is_edition()
+        fallback = self._fallback()
+        fallback = self._relative(fallback, "") if fallback is not None else None
 
         options = []
         if self._relative(self._manifest, "") != MANIFEST_NAME:
             options += ["--manifest", self._relative(self._manifest, "")]
         if edition:
             options += ["--jungle", jungle, "--icon-root", root or "."]
-        if not self._fallback_icon:
+        if fallback is None:
             options.append("--no-fallback-icon")
         elif edition or fallback != FALLBACK_ICON_PATH:
             options += ["--fallback-icon", fallback]
@@ -319,8 +347,8 @@ class LauncherIconGenerator:
         directories = [
             self._icon_directory(size) for size in sorted(set(self._sizes.values()))
         ]
-        if self._fallback_icon:
-            directories.append(os.path.dirname(self._path(self._fallback_path)))
+        if self._fallback() is not None:
+            directories.append(os.path.dirname(self._path(self._fallback())))
         return directories
 
     # ------------------------------------------------------------------ sources
@@ -419,11 +447,16 @@ class LauncherIconGenerator:
                 f"the icon root {self._icon_root!r} contains {unwritable[0]!r}, which a "
                 "jungle entry cannot hold"
             )
-        if self._fallback_icon:
-            fallback = self._path(self._fallback_path)
+        if self._fallback_icon and self._fallback() is None:
+            raise LauncherIconError(
+                "an edition needs a fallback icon of its own, or none: the default is "
+                "the shared edition's; give --fallback-icon PATH or --no-fallback-icon"
+            )
+        if self._fallback() is not None:
+            fallback = self._path(self._fallback())
             if os.path.isdir(fallback) or not fallback.lower().endswith(".png"):
                 raise LauncherIconError(
-                    f"the fallback icon path {self._fallback_path!r} is not a .png file"
+                    f"the fallback icon path {self._fallback()!r} is not a .png file"
                 )
         if self._readme_anchor is not None:
             self._read_readme()
@@ -469,9 +502,9 @@ class LauncherIconGenerator:
                 handle.write(DRAWABLES_XML)
             logger.info("wrote %s at %dx%d", directory, size, size)
 
-        if self._fallback_icon:
+        if self._fallback() is not None:
             largest = max(self._sizes.values())
-            self._write_icon(self._path(self._fallback_path), largest)
+            self._write_icon(self._path(self._fallback()), largest)
             logger.info("wrote the %dx%d fallback icon", largest, largest)
 
         for directory in self.unmapped_directories(set(self._sizes.values())):
@@ -499,19 +532,28 @@ class LauncherIconGenerator:
 
     # ------------------------------------------------------------------- README
 
-    def _read_readme(self) -> str:
-        """The README's text, which has to hold the anchor."""
+    def _read_readme(self) -> Tuple[str, str]:
+        """
+        The README's text with its line endings as "\\n", and the line ending it uses.
+
+        Raises when the README is missing, or the anchor does not begin exactly one
+        line of it outside code.
+        """
         readme = self._path(self._readme)
         if not os.path.isfile(readme):
             raise LauncherIconError(f"no README at {readme}")
-        with open(readme, "r", encoding="utf-8") as handle:
+        # Untranslated, so the file is written back with the endings it had.
+        with open(readme, "r", encoding="utf-8", newline="") as handle:
             text = handle.read()
-        if self._readme_anchor not in text:
+        newline = "\r\n" if "\r\n" in text else "\n"
+        text = text.replace("\r\n", "\n")
+        try:
+            anchor_line(text.split("\n"), self._readme_anchor)
+        except ReadmeTableError as error:
             raise LauncherIconError(
-                f"{self._readme} has no {self._readme_anchor!r} to put the icon table "
-                "under; check --readme-anchor"
-            )
-        return text
+                f"{self._readme}: {error}; check --readme-anchor"
+            ) from error
+        return text, newline
 
     def write_readme(self) -> "LauncherIconGenerator":
         """
@@ -525,21 +567,24 @@ class LauncherIconGenerator:
         self.validate()
         if not self._sizes:
             self.resolve_sizes()
-        text = self._read_readme()
-        with open(self._path(self._readme), "w", encoding="utf-8") as handle:
-            handle.write(splice_table(text, self._readme_anchor, table(self._sizes)))
+        text, newline = self._read_readme()
+        spliced = splice_table(text, self._readme_anchor, table(self._sizes))
+        with open(
+            self._path(self._readme), "w", encoding="utf-8", newline=""
+        ) as handle:
+            handle.write(spliced.replace("\n", newline))
         logger.info("tabulated %d products in %s", len(self._sizes), self._readme)
         return self
 
-    def _readme_table(self) -> Optional[Dict[str, Tuple[int, int]]]:
+    def _readme_table(self) -> Optional[Table]:
         """
-        Reads the size table back out of the README, as product to (width, height).
+        Reads the size table back out of the README (see :func:`read_table`).
 
         None when no anchor is set; raises when the README or the anchor is missing.
         """
         if self._readme_anchor is None:
             return None
-        return read_table(self._read_readme(), self._readme_anchor)
+        return read_table(self._read_readme()[0], self._readme_anchor)
 
     def mapping(self) -> Dict[str, int]:
         """
@@ -684,12 +729,12 @@ class LauncherIconGenerator:
         """
         The fallback is the largest size mapped: read from the mapping, not the SDK.
 
-        Not checked when it is not written, nor without a mapping to size it from;
-        the missing mapping is reported already.
+        Not checked when it is not written, for an edition given no path for it, nor
+        without a mapping to size it from; the missing mapping is reported already.
         """
-        if not self._fallback_icon or not mapped:
+        if self._fallback() is None or not mapped:
             return []
-        fallback = self._path(self._fallback_path)
+        fallback = self._path(self._fallback())
         largest = max(mapped.values())
         if not os.path.isfile(fallback):
             return [(False, f"{fallback} is missing")]
@@ -708,18 +753,29 @@ class LauncherIconGenerator:
     def _check_readme(self, mapped: Dict[str, int]) -> List[Tuple[bool, str]]:
         """The README's table states the mapping, product by product."""
         try:
-            stated = self._readme_table()
+            found = self._readme_table()
         except LauncherIconError as error:
             return [(False, str(error))]
-        if stated is None:
+        if found is None:
             return []
-        if not stated:
+        if found.rows is None:
             return [
                 (
                     False,
-                    f"{self._readme} has no icon table under {self._readme_anchor!r}",
+                    f"{self._readme} has no icon table directly under "
+                    f"{self._readme_anchor!r}",
                 )
             ]
+        report: List[Tuple[bool, str]] = []
+        if found.problems:
+            report.append(
+                (
+                    False,
+                    f"{self._readme}'s icon table does not read cleanly: "
+                    + "; ".join(found.problems),
+                )
+            )
+        stated = found.rows
         wrong = []
         for product in sorted(set(stated) | set(mapped)):
             row = stated.get(product)
@@ -733,7 +789,7 @@ class LauncherIconGenerator:
                 + ("not mapped" if size is None else f"mapping {size} x {size}")
                 + ")"
             )
-        return [
+        report.append(
             (
                 not wrong,
                 f"{self._readme}'s icon table agrees with the mapping ({len(stated)})"
@@ -741,7 +797,8 @@ class LauncherIconGenerator:
                 else f"{self._readme}'s icon table disagrees with the mapping on "
                 + ", ".join(wrong),
             )
-        ]
+        )
+        return report
 
     def _check_against_sdk(self, mapped: Dict[str, int]) -> List[Tuple[bool, str]]:
         try:
@@ -864,65 +921,6 @@ def table(sizes: Dict[str, int]) -> str:
     ]
     lines += [f"| {product:<{left}} | {size:>{right}} |" for product, size in rows]
     return "\n".join(lines) + "\n"
-
-
-def _table_span(lines: List[str]) -> Tuple[int, int]:
-    """
-    Where the table is in the lines following the anchor: (start, end), or the
-    point to insert one at, twice, when there is none.
-
-    The first run of ``|`` lines, looked for only up to the next markdown heading, so
-    that a table in a later section is never mistaken for this one. ``lines[0]`` is
-    the rest of the anchor's own line, and is never the table.
-    """
-    for index in range(1, len(lines)):
-        line = lines[index]
-        if line.startswith("#"):
-            break
-        if line.startswith("|"):
-            end = index
-            while end < len(lines) and lines[end].startswith("|"):
-                end += 1
-            return index, end
-    return 1, 1
-
-
-def splice_table(text: str, anchor: str, rendered: str) -> str:
-    """
-    Replaces the table under ``anchor`` in a markdown text, or inserts one.
-
-    An inserted table goes right after the anchor's line, set off by a blank line on
-    either side. Everything else in the text is left as it was.
-    """
-    head, tail = text.split(anchor, 1)
-    lines = tail.split("\n")
-    rows = rendered.rstrip("\n").split("\n")
-    start, end = _table_span(lines)
-    if start == end:
-        # No table yet. Blank lines after the anchor fold into the one that sets the
-        # table off, so the text reads the same whatever spacing it had.
-        while end < len(lines) and not lines[end].strip():
-            end += 1
-        rows = [""] + rows + [""]
-    return head + anchor + "\n".join(lines[:start] + rows + lines[end:])
-
-
-def read_table(text: str, anchor: str) -> Dict[str, Tuple[int, int]]:
-    """
-    Reads the table under ``anchor`` back, as product to (width, height).
-
-    Empty when there is no table there, or the anchor is not in the text.
-    """
-    if anchor not in text:
-        return {}
-    lines = text.split(anchor, 1)[1].split("\n")
-    start, end = _table_span(lines)
-    stated: Dict[str, Tuple[int, int]] = {}
-    for line in lines[start:end]:
-        match = TABLE_ROW_PATTERN.match(line)
-        if match:
-            stated[match.group(1)] = (int(match.group(2)), int(match.group(3)))
-    return stated
 
 
 __all__ = [

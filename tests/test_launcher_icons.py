@@ -15,11 +15,16 @@ from garmin_graphics_generator.launcher_icons import (
     mapping_block,
     mapping_pattern,
     read_png_size,
-    read_table,
     resample_renderer,
     splice,
-    splice_table,
     table,
+)
+from garmin_graphics_generator.readme_table import (
+    ReadmeTableError,
+    Table,
+    anchor_line,
+    read_table,
+    splice_table,
 )
 
 MANIFEST = """<?xml version="1.0"?>
@@ -552,7 +557,9 @@ def test_a_jungle_in_a_subdirectory_reaches_the_project_root(tmp_path):
     project, devices = make_project(tmp_path)
     (project / "sub").mkdir()
     (project / "sub" / "icons.jungle").write_text("")
-    generator(project, devices).set_jungle("sub/icons.jungle").write_mapping()
+    generator(project, devices).set_jungle("sub/icons.jungle").set_fallback_icon(
+        False
+    ).write_mapping()
     jungle = (project / "sub" / "icons.jungle").read_text()
     assert "tiny.resourcePath = $(tiny.resourcePath);../resources-icon-38\n" in jungle
 
@@ -759,8 +766,8 @@ def test_the_recorded_command_reruns_for_a_jungle_in_a_subdirectory(tmp_path):
     project, devices = make_project(tmp_path)
     (project / "sub").mkdir()
     (project / "sub" / "icons.jungle").write_text("")
-    generator(project, devices).set_jungle(
-        "sub/icons.jungle"
+    generator(project, devices).set_jungle("sub/icons.jungle").set_fallback_path(
+        "resources/drawables/launcher_icon.png"
     ).generate_icons().write_mapping()
     jungle = (project / "sub" / "icons.jungle").read_text()
     command = next(
@@ -838,7 +845,7 @@ def test_splice_table_inserts_one_right_after_the_anchor():
 def test_splice_table_inserts_at_the_end_of_the_text():
     spliced = splice_table(f"# Face\n\n{ANCHOR}:\n", ANCHOR, table(SIZES))
     assert spliced == f"# Face\n\n{ANCHOR}:\n\n" + table(SIZES)
-    assert read_table(spliced, ANCHOR) == {p: (s, s) for p, s in SIZES.items()}
+    assert read_table(spliced, ANCHOR).rows == {p: (s, s) for p, s in SIZES.items()}
 
 
 def test_splice_table_replaces_only_the_table_under_the_anchor():
@@ -856,14 +863,14 @@ def test_splice_table_is_stable_on_a_second_run():
     assert splice_table(once, ANCHOR, table(SIZES)) == once
 
 
-def test_read_table_stops_at_the_next_heading():
-    # No table in the anchor's section: the one under "## Fonts" is not it.
-    assert read_table(README, ANCHOR) == {}
+def test_read_table_reads_only_a_table_directly_under_the_anchor():
+    # Prose comes first, so the table under "## Fonts" is not it.
+    assert read_table(README, ANCHOR) == Table(None, [])
 
 
 def test_read_table_reads_back_what_table_writes():
     text = splice_table(README, ANCHOR, table(SIZES))
-    assert read_table(text, ANCHOR) == {p: (s, s) for p, s in SIZES.items()}
+    assert read_table(text, ANCHOR) == Table({p: (s, s) for p, s in SIZES.items()}, [])
 
 
 def test_read_table_reads_the_format_the_local_script_wrote():
@@ -876,10 +883,9 @@ def test_read_table_reads_the_format_the_local_script_wrote():
         "| instinctcrossoveramoled | 38 x 38 |\n\n"
         "The icons are generated output.\n"
     )
-    assert read_table(text, ANCHOR) == {
-        "venu3": (70, 70),
-        "instinctcrossoveramoled": (38, 38),
-    }
+    assert read_table(text, ANCHOR) == Table(
+        {"venu3": (70, 70), "instinctcrossoveramoled": (38, 38)}, []
+    )
 
 
 def test_generation_writes_the_readme_table(tmp_path):
@@ -915,7 +921,7 @@ def test_check_reports_a_missing_table(tmp_path):
     generator(project, devices).generate_icons().write_mapping()
     (project / "README.md").write_text(README)
     failures = failures_of(with_anchor(project, devices).check())
-    assert failures == [f"README.md has no icon table under {ANCHOR!r}"]
+    assert failures == [f"README.md has no icon table directly under {ANCHOR!r}"]
 
 
 def test_check_reports_a_missing_anchor(tmp_path):
@@ -1092,3 +1098,133 @@ def test_load_renderer_leaves_no_bytecode_beside_the_file(tmp_path):
     assert load_renderer(str(tools / "icon.py"))(38).size == (38, 38)
     assert os.listdir(tools) == ["icon.py"]
     assert sys.dont_write_bytecode == before
+
+
+# ------------------------------------------- which table, and which anchor, is meant
+
+TABLE_TEXT = table(SIZES)
+ROWS = {p: (s, s) for p, s in SIZES.items()}
+
+
+def test_an_unrelated_table_later_in_the_section_is_left_alone():
+    text = (
+        f"{ANCHOR}:\n\nThe settings, for comparison:\n\n"
+        "| Setting | Default |\n| :------ | ------: |\n| size    |      12 |\n"
+    )
+    spliced = splice_table(text, ANCHOR, TABLE_TEXT)
+    assert spliced == f"{ANCHOR}:\n\n" + TABLE_TEXT + "\n" + text[len(ANCHOR) + 3 :]
+    assert read_table(spliced, ANCHOR) == Table(ROWS, [])
+    # Before generation, the check finds no table rather than that one.
+    assert read_table(text, ANCHOR).rows is None
+
+
+def test_a_fence_and_a_stale_table_below_it_are_not_the_table():
+    stale = "| Product | Icon |\n| :--- | ---: |\n| tiny | 40 x 40 |\n"
+    text = f"{ANCHOR}:\n\n```bash\n# regenerate\nmake icons\n```\n\n" + stale
+    assert read_table(text, ANCHOR).rows is None
+    spliced = splice_table(text, ANCHOR, TABLE_TEXT)
+    assert spliced == f"{ANCHOR}:\n\n" + TABLE_TEXT + "\n" + text[len(ANCHOR) + 3 :]
+    assert read_table(spliced, ANCHOR) == Table(ROWS, [])
+
+
+def test_the_anchor_inside_a_fence_or_mid_line_does_not_count():
+    text = (
+        "```bash\n"
+        f"{ANCHOR}\n"
+        "```\n"
+        f'garmin-graphics-generator icons --readme-anchor "{ANCHOR}"\n\n'
+        f"{ANCHOR}:\n\n" + TABLE_TEXT
+    )
+    assert anchor_line(text.split("\n"), ANCHOR) == 5
+    assert read_table(text, ANCHOR) == Table(ROWS, [])
+
+
+def test_the_anchor_may_be_a_heading():
+    text = "# Face\n\n## Icon sizes\n\n" + TABLE_TEXT
+    assert read_table(text, "Icon sizes") == Table(ROWS, [])
+
+
+def test_an_anchor_beginning_two_lines_is_refused():
+    text = f"{ANCHOR}:\n\n{TABLE_TEXT}\n{ANCHOR}, again.\n"
+    with pytest.raises(ReadmeTableError, match=r"2 lines begin with .*\(lines 1, 9\)"):
+        splice_table(text, ANCHOR, TABLE_TEXT)
+    with pytest.raises(ReadmeTableError, match="make the anchor unique"):
+        read_table(text, ANCHOR)
+
+
+def test_check_refuses_an_ambiguous_anchor(tmp_path):
+    project, devices = make_project(tmp_path)
+    generator(project, devices).generate_icons().write_mapping()
+    (project / "README.md").write_text(f"{ANCHOR}:\n\n{TABLE_TEXT}\n{ANCHOR}.\n")
+    failures = failures_of(with_anchor(project, devices).check())
+    assert len(failures) == 1
+    assert "make the anchor unique" in failures[0]
+
+
+def test_check_reports_unreadable_and_repeated_rows(tmp_path):
+    project, devices = make_project(tmp_path)
+    with_readme(project, devices).generate_icons().write_mapping().write_readme()
+    readme = project / "README.md"
+    readme.write_text(
+        readme.read_text().replace(
+            "| venu3s  | 70 x 70 |\n",
+            "| venu3s  | 70 x 70 |\n| venu3s  | 70 x 70 |\n| `old`   | 40 × 40 |\n",
+        )
+    )
+    failures = failures_of(with_anchor(project, devices).check())
+    assert len(failures) == 1
+    assert "venu3s is listed more than once" in failures[0]
+    assert "unreadable row '| `old`   | 40 × 40 |'" in failures[0]
+
+
+def test_a_table_without_a_separator_is_reported():
+    text = f"{ANCHOR}:\n\n| Product | Icon |\n| tiny | 38 x 38 |\n"
+    assert read_table(text, ANCHOR).problems == ["no header and separator row"]
+
+
+def test_the_readme_keeps_its_line_endings(tmp_path):
+    project, devices = make_project(tmp_path)
+    (project / "README.md").write_bytes(README.replace("\n", "\r\n").encode())
+    with_anchor(project, devices).generate_icons().write_mapping().write_readme()
+    written = (project / "README.md").read_bytes()
+    assert b"\r\n" in written
+    assert written.count(b"\n") == written.count(b"\r\n")
+    assert (TABLE_TEXT.replace("\n", "\r\n")).encode() in written
+    assert not failures_of(with_anchor(project, devices).check())
+
+
+# ------------------------------------------------------ the edition fallback default
+
+
+def test_a_library_edition_has_no_fallback_until_given_one(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    unset = (
+        generator(project, devices)
+        .set_manifest("manifest-premium.xml")
+        .set_jungle("premium.jungle")
+        .set_icon_root("premium")
+    )
+    with pytest.raises(LauncherIconError, match="--fallback-icon PATH"):
+        unset.generate_icons()
+    assert not (project / "premium").exists()
+
+    edition(project, devices).generate_icons().write_mapping()
+    # A shared fallback of another size is not the edition's, and is not checked.
+    (project / "resources" / "drawables").mkdir(parents=True)
+    Image.new("RGB", (12, 12)).save(project / FALLBACK)
+    report = unset.check()
+    assert not failures_of(report)
+    assert not any("largest size mapped" in message for _, message in report)
+
+
+def test_a_shared_fallback_elsewhere_is_checked_where_it_is(tmp_path):
+    project, devices = make_project(tmp_path)
+    elsewhere = "resources/icons/launcher_icon.png"
+    generator(project, devices).set_fallback_path(
+        elsewhere
+    ).generate_icons().write_mapping()
+    failures = failures_of(generator(project, devices).check())
+    assert failures == [f"{os.path.join(str(project), FALLBACK)} is missing"]
+    report = generator(project, devices).set_fallback_path(elsewhere).check()
+    assert not failures_of(report)
