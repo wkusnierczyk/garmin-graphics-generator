@@ -1260,3 +1260,27 @@ def test_a_fence_closes_in_crlf_text():
     spliced = splice_table(text, "Icon sizes", TABLE_TEXT)
     assert spliced == (text + "\r\n" + TABLE_TEXT.replace("\n", "\r\n"))
     assert read_table(spliced, "Icon sizes") == Table(ROWS, [])
+
+
+# ------------------------------------------------------------------ an empty anchor
+
+
+@pytest.mark.parametrize("anchor", ["", "   "], ids=["empty", "blank"])
+def test_an_empty_anchor_is_refused_not_ignored(anchor):
+    with pytest.raises(LauncherIconError, match="is empty"):
+        LauncherIconGenerator().set_readme_anchor(anchor)
+    with pytest.raises(ReadmeTableError, match="is empty"):
+        read_table(f"{ANCHOR}:\n\n{TABLE_TEXT}", anchor)
+
+
+@pytest.mark.parametrize("anchor", ["", "   "], ids=["empty", "blank"])
+def test_cli_fails_on_an_empty_anchor_over_a_stale_table(tmp_path, anchor):
+    project, devices = make_project(tmp_path)
+    with_readme(project, devices).generate_icons().write_mapping().write_readme()
+    readme = project / "README.md"
+    readme.write_text(readme.read_text().replace("38 x 38", "40 x 40"))
+    options = ["icons", "-p", str(project), "-d", str(devices), "--check", "-q"]
+    assert main(options + ["--readme-anchor", ANCHOR]) == 1
+    with pytest.raises(SystemExit) as raised:
+        main(options + ["--readme-anchor", anchor])
+    assert raised.value.code != 0

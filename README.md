@@ -429,8 +429,9 @@ The README is `README.md` in the project unless `--readme PATH` says otherwise. 
 table keeps its own line ending, and the table's lines end as the anchor's line does. Generation checks
 the anchor before it writes anything.
 
-Without `--readme-anchor` the README is neither written nor checked. The anchor is recorded in the
-jungle block's regenerate command, so rerunning that command keeps the table too.
+Without `--readme-anchor` the README is neither written nor checked. An empty or blank anchor is an
+error, not the same as leaving the option out, so it cannot turn the check off unnoticed. The anchor
+is recorded in the jungle block's regenerate command, so rerunning that command keeps the table too.
 
 ### Editions
 

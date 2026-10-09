@@ -261,9 +261,15 @@ class LauncherIconGenerator:
         line with only blank lines between; generation rewrites it, or inserts one
         directly after the anchor's line, and the check compares it with the mapping.
         Without an anchor the README is neither written nor checked. ``readme`` is
-        relative to the project.
+        relative to the project. An empty or blank anchor is refused rather than
+        taken for None: it would turn the table's check off without a word.
         """
-        self._readme_anchor = anchor or None
+        if anchor is not None and not anchor.strip():
+            raise LauncherIconError(
+                f"the README anchor {anchor!r} is empty; give the text the table "
+                "follows, or leave --readme-anchor out for no README table"
+            )
+        self._readme_anchor = anchor
         self._readme = readme
         return self
 

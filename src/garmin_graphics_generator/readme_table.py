@@ -37,8 +37,8 @@ def anchor_line(lines: List[str], anchor: Optional[str]) -> int:
     anchor is not where the table goes. Raises when no line, or more than one,
     begins with it.
     """
-    if not anchor:
-        raise ReadmeTableError("the anchor is empty")
+    if not anchor or not anchor.strip():
+        raise ReadmeTableError(f"the anchor {anchor!r} is empty")
     found: List[int] = []
     fence: Optional[str] = None
     for index, line in enumerate(lines):
