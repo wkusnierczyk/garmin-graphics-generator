@@ -7,5 +7,6 @@
   "resized_width": 200,
   "size_variation": 0,
   "orientation_variation": 0,
-  "max_overlap": 0
+  "max_overlap": 0,
+  "coverage": 60
 }

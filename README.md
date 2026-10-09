@@ -477,6 +477,35 @@ garmin-graphics-generator hero \
    my_watch_1.jpg my_watch_2.jpg
 ```
 
+How dense a hero comes out is two settings:
+
+* `--overlap` (`0..100`, default `0`) caps how much of one image another may cover, in percent of the
+  smaller of the two. It permits crowding but does not ask for it.
+* `--coverage` (`1..100`, default `60`) is the percentage of the canvas the images aim to fill
+  together. It sets the target size each image is shrunk to; an image is never enlarged. Each image
+  is sized as if it were square, so tall watch renders fill somewhat less than the figure says.
+
+A denser composition, with larger watches sitting closer, is asked for by raising both: the coverage
+to let the watches be drawn larger, and the overlap cap enough to let them fit. Raising only the
+overlap gives the same small watches, occasionally touching; raising only the coverage can ask for
+more than fits without overlap.
+
+Coverage only makes the watches larger while the inputs are larger than the target it sets: an input
+already smaller than the target is drawn at its own size, and raising the coverage further changes
+nothing. Watch renders from `shots` are large enough for that on a store hero with several watches.
+For watches genuinely bigger than an input allows, give larger input renders, or a smaller
+`--hero-file-size`.
+
+A coverage too high for the canvas is retried at shrinking sizes (twenty attempts, down to about a
+fifth of the target). If none of them seats every image, one more pass at the smallest size keeps
+what fits: a partial layout that **leaves images out**, with a warning naming how many were placed. Lower the coverage, or raise
+the overlap, when that warning appears.
+
+```bash
+# five watches, larger and closer than the defaults give
+garmin-graphics-generator hero -o ./output --coverage 85 --overlap 25 watch-*.png
+```
+
 The CLI has four commands, `shots`, `hero`, `compose` and `icons`. An invocation naming none of them is treated
 as `hero`, so the flat form the tool had before `icons` existed keeps working.
 
@@ -667,6 +696,8 @@ from garmin_graphics_generator import WatchHeroGenerator
     .set_input_paths(["watch1.jpg", "watch2.jpg"])
     .set_output_directory("./output")
     .set_variations(size_var=2, orientation_var=30)
+    .set_max_overlap(25)              # percent, 0..100
+    .set_coverage(85)                 # percent of the canvas, 1..100; default 60
     .prepare_output_directory()
     .process_input_images()
     .generate_hero_composition()
