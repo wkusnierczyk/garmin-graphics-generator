@@ -29,6 +29,8 @@ installed can still run this.
 The container is what makes the command portable: the same capture runs on a
 developer's machine and in CI, and needs no screen-recording permission on either.
 """
+# The container's shell script and its commentary are a fifth of this module.
+# pylint: disable=too-many-lines
 import importlib.util
 import logging
 import os
@@ -108,6 +110,30 @@ class Shot(NamedTuple):
     watch_path: str
 
 
+# Removes the app's settings and storage, which the simulator keeps on disk, as a
+# watch does, and reads back the next time it runs the app: the settings override
+# the pushed build's defaults, and Application.Storage carries one build's state
+# into the next. Found by watching what a build writes (#30), under
+# /tmp/com.garmin.connectiq/GARMIN/APPS in the tester image ($TMPDIR on a desktop):
+# SETTINGS/<app>.SET for the properties, DATA/<app>.DAT and .IDX for the storage.
+# <app> is the name the app was first installed under, SHOTS-1, whichever build is
+# pushed after it. Only files go; the simulator's directories stay. A removal that
+# fails stops the run, rather than capturing the last build's state unannounced as
+# the find before this one did on every run: GNU find refuses -prune with -delete,
+# and its error went to /dev/null. SIM_APPS is for running it outside the container.
+_CLEAR_APP_STATE = r"""
+APPS="${SIM_APPS:-/tmp/com.garmin.connectiq/GARMIN/APPS}"
+clear_app_state() {
+  local kept
+  for kept in "$APPS/SETTINGS" "$APPS/DATA"; do
+    [ -d "$kept" ] || continue
+    # Looked at again: BSD find can fail to delete a file and still exit 0.
+    find "$kept" -type f -print -delete && [ -z "$(find "$kept" -type f)" ] \
+      || fail "could not clear the app's settings and storage in $kept"
+  done
+}
+"""
+
 # Run inside the container to set the capture up, then block. The X server and the
 # simulator have to outlive the step that starts them, so they cannot be launched
 # from a "docker exec": a backgrounded process there is at the mercy of that exec's
@@ -118,7 +144,8 @@ class Shot(NamedTuple):
 # not carry: the point of this script is that the image needs nothing added to it.
 # It probes rather than sleeping a flat interval because the launcher returns long
 # before the simulator accepts connections.
-_SETUP_SCRIPT = r"""
+_SETUP_SCRIPT = (
+    r"""
 set -eu -o pipefail
 
 fail() { echo "shots: $*" >&2; echo failed > "$OUT/status"; exit 1; }
@@ -183,10 +210,13 @@ running() {
   ps -eo pgid=,stat= | awk -v a="$1" -v b="$2" \
     '($1 == a || $1 == b) && $2 !~ /^Z/ { live = 1 } END { exit !live }'
 }
+"""
+    + _CLEAR_APP_STATE
+    + r"""
 
-# One simulator per build, each started fresh. A running simulator keeps the app's
-# settings in a .SET file and draws those rather than a new build's defaults, so
-# the file is removed and the simulator restarted between builds; a fresh
+# One simulator per build, each started fresh. The simulator keeps the app's
+# settings and storage on disk and hands them to the next build it runs, so they
+# are removed and the simulator restarted between builds; a fresh
 # simulator is also what makes "the face is on screen" mean this build's face,
 # since it comes up showing no device at all. Each is started under setsid so the
 # whole of it -- the launcher script and what it runs -- can be stopped as a group.
@@ -196,7 +226,7 @@ for i in $(seq 1 "$BUILDS"); do
     # Stopped and waited for as process groups, not by the port closing: a
     # simulator can close its port before it has finished writing the app's
     # settings, and a write landing after the removal below would hand this
-    # build the last one's settings. TERM first; KILL for what ignores it.
+    # build the last one's settings or storage. TERM first; KILL for what ignores it.
     kill -TERM -- "-$PUSH" "-$SIMULATOR" 2>/dev/null || true
     waited=0
     while running "$SIMULATOR" "$PUSH"; do
@@ -206,12 +236,8 @@ for i in $(seq 1 "$BUILDS"); do
       sleep 0.5
     done
   fi
-  # The app's settings and its storage, both kept by the simulator between runs
-  # of the same app. Settings would override this build's defaults; storage would
-  # carry state from one build into the next.
-  find /tmp /root -path /tmp/shots_source -prune -o -type f \
-    \( -path '*/GARMIN/APPS/SETTINGS/*' -o -path '*/GARMIN/APPS/DATA/*' \) \
-    -print -delete 2>/dev/null || true
+  # No settings and no storage, as a fresh install has them.
+  clear_app_state
 
   setsid "$SDK_BIN/connectiq" >/tmp/simulator.log 2>&1 &
   SIMULATOR=$!
@@ -235,6 +261,7 @@ done
 # frames have been taken, so this waits to be torn down rather than exiting.
 tail -f /dev/null
 """
+)
 
 # Copies the live framebuffer to a regular file the caller can read off the bind
 # mount. A plain copy rather than reading the mapping through the mount: what Xvfb

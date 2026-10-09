@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -561,6 +562,107 @@ class TestTimezoneInTheContainer:
                 timezone="Mars/Olympus",
             )
         assert started == []
+
+
+BASH = shutil.which("bash")
+
+
+def clear_app_state(apps, out):
+    """Runs the setup script's clear_app_state against ``apps``, as it is in the script."""
+    script = (
+        "set -eu -o pipefail\n"
+        'fail() { echo "shots: $*" >&2; echo failed > "$OUT/status"; exit 1; }\n'
+        + shots._CLEAR_APP_STATE
+        + "clear_app_state\n"
+    )
+    return subprocess.run(
+        [BASH, "-c", script],
+        env={**os.environ, "SIM_APPS": str(apps), "OUT": str(out)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def make_apps(tmp_path):
+    """The simulator's GARMIN/APPS as one build leaves it, in the layout #30 found."""
+    apps = tmp_path / "GARMIN" / "APPS"
+    files = [
+        "SETTINGS/SHOTS-1.SET",
+        "DATA/SHOTS-1.DAT",
+        "DATA/SHOTS-1.IDX",
+        "DATA/MEDIA/OBJSTORE/SHOTS-1/comp/0001",
+        "MEDIA/SHOTS-1.PRG",
+    ]
+    for name in files:
+        (apps / name).parent.mkdir(parents=True, exist_ok=True)
+        (apps / name).write_bytes(b"x")
+    (apps / "DATA" / "AUXFILE").mkdir()
+    return apps
+
+
+@pytest.mark.skipif(BASH is None, reason="needs bash")
+class TestClearAppState:
+    """Each build starts with no settings and no storage, as a fresh install does."""
+
+    def test_settings_and_storage_are_removed(self, tmp_path):
+        apps = make_apps(tmp_path)
+
+        cleared = clear_app_state(apps, tmp_path)
+
+        assert cleared.returncode == 0, cleared.stderr
+        assert not (apps / "SETTINGS" / "SHOTS-1.SET").exists()
+        assert not (apps / "DATA" / "SHOTS-1.DAT").exists()
+        assert not (apps / "DATA" / "SHOTS-1.IDX").exists()
+        assert not (apps / "DATA/MEDIA/OBJSTORE/SHOTS-1/comp/0001").exists()
+
+    def test_the_simulators_layout_and_the_installed_app_are_kept(self, tmp_path):
+        apps = make_apps(tmp_path)
+
+        clear_app_state(apps, tmp_path)
+
+        assert (apps / "SETTINGS").is_dir()
+        assert (apps / "DATA" / "AUXFILE").is_dir()
+        assert (apps / "DATA/MEDIA/OBJSTORE/SHOTS-1/comp").is_dir()
+        assert (apps / "MEDIA" / "SHOTS-1.PRG").exists()
+
+    def test_nothing_to_clear_before_the_first_simulator(self, tmp_path):
+        cleared = clear_app_state(tmp_path / "GARMIN" / "APPS", tmp_path)
+        assert cleared.returncode == 0, cleared.stderr
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root deletes from a read-only directory",
+    )
+    def test_a_removal_that_fails_stops_the_run(self, tmp_path):
+        """The old removal failed on every run, and nothing said so."""
+        apps = make_apps(tmp_path)
+        (apps / "DATA").chmod(0o555)
+        try:
+            cleared = clear_app_state(apps, tmp_path)
+        finally:
+            (apps / "DATA").chmod(0o755)
+
+        assert cleared.returncode != 0
+        assert "could not clear" in cleared.stderr
+        assert (tmp_path / shots.STATUS_NAME).read_text().strip() == "failed"
+
+    def test_the_setup_script_clears_before_each_simulator_starts(self):
+        script = shots._SETUP_SCRIPT
+        loop = script.index('for i in $(seq 1 "$BUILDS"); do\n  if [ "$i" -gt 1 ]')
+        call = script.index("  clear_app_state\n", loop)
+        assert loop < call < script.index('setsid "$SDK_BIN/connectiq"')
+
+    def test_the_setup_script_is_valid_bash(self):
+        checked = subprocess.run(
+            [BASH, "-n", "-c", shots._SETUP_SCRIPT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        assert checked.returncode == 0, checked.stderr
 
 
 def test_docker_available_is_false_without_the_client(monkeypatch):
