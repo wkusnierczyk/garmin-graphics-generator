@@ -112,5 +112,6 @@ def test_a_very_wide_input_keeps_a_resized_height_of_at_least_one(tmp_path):
 
     gen.generate_resized_files()
 
+    assert len(list(tmp_path.iterdir())) == 1
     resized = Image.open(tmp_path / f"wide{gen._resized_suffix}.png")
     assert resized.size == (10, 1)
