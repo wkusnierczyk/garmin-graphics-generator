@@ -541,6 +541,9 @@ garmin-graphics-generator hero \
    my_watch_1.jpg my_watch_2.jpg
 ```
 
+`--resized-file-width` (`-w`, at least `1`, default `200`) is the width in pixels of each resized
+copy; its height keeps the input's aspect ratio, and is never less than 1 pixel.
+
 How dense a hero comes out is two settings:
 
 * `--overlap` (`0..100`, default `0`) caps how much of one image another may cover, in percent of the
@@ -766,6 +769,7 @@ from garmin_graphics_generator import WatchHeroGenerator
     .set_variations(size_var=2, orientation_var=30)
     .set_max_overlap(25)              # percent, 0..100
     .set_coverage(85)                 # percent of the canvas, 1..100; default 60
+    .set_resized_width(200)           # pixels, at least 1; default 200
     .prepare_output_directory()
     .process_input_images()
     .generate_hero_composition()
