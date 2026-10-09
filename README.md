@@ -349,7 +349,7 @@ spliced into `monkey.jungle` between generated markers. Anything outside those m
 
 ```bash
 # regenerate, resampling a master image
-garmin-graphics-generator icons -p ../my-watch-face -R resample:art/icon-512.png
+garmin-graphics-generator icons -p ../my-watch-face -R resample:../my-watch-face/art/icon-512.png
 
 # regenerate, with the project drawing its own artwork at each size
 garmin-graphics-generator icons -p ../my-watch-face -R ../my-watch-face/tools/icon.py
