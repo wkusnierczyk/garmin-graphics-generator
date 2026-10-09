@@ -15,6 +15,7 @@ from garmin_graphics_generator.launcher_icons import (
     mapping_block,
     mapping_pattern,
     read_png_size,
+    rebase_specification,
     resample_renderer,
     splice,
     table,
@@ -788,7 +789,94 @@ def test_the_recorded_command_reruns_for_a_jungle_in_a_subdirectory(tmp_path):
     )
     rerun = words + ["-p", str(project), "-d", str(devices), "-R", str(module), "-q"]
     assert main(rerun) == 0
-    assert (project / "sub" / "icons.jungle").read_text() == jungle
+    # A callable set without its specification is left out of the command; the rerun
+    # gave one, which the command now records, and nothing else changes.
+    assert (project / "sub" / "icons.jungle").read_text() == jungle.replace(
+        "icons --jungle", f"icons -R {shlex.quote(str(module))} --jungle"
+    )
+
+
+def regenerate_command(jungle):
+    """The command a generated block records, as it would be pasted."""
+    return next(
+        line.split("Regenerate with: ", 1)[1]
+        for line in jungle.splitlines()
+        if "Regenerate with" in line
+    )
+
+
+def test_a_renderer_specification_is_rebased_onto_the_project(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert rebase_specification("project/tools/icon.py", "project") == "tools/icon.py"
+    assert rebase_specification("project/a.py:draw", "project") == "a.py:draw"
+    assert (
+        rebase_specification("resample:art/m.png", "project") == "resample:../art/m.png"
+    )
+    # An absolute path under the project would tie the jungle to one machine.
+    inside = str(tmp_path / "project" / "icon.py")
+    assert rebase_specification(inside, "project") == "icon.py"
+
+
+def test_a_renderer_specification_that_reads_the_same_anywhere_is_kept(tmp_path):
+    start = str(tmp_path / "project")
+    assert rebase_specification("package.module:draw", start) == "package.module:draw"
+    outside = str(tmp_path / "icon.py")
+    assert rebase_specification(outside, start) == outside
+    master = "resample:" + str(tmp_path / "m.png")
+    assert rebase_specification(master, start) == master
+
+
+def test_the_recorded_command_names_a_renderer_given_with_its_specification(tmp_path):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    edition(project, devices).set_renderer(
+        flat(None), str(project / "tools" / "launcher icon.py")
+    ).generate_icons().write_mapping()
+    assert regenerate_command((project / "premium.jungle").read_text()) == (
+        "garmin-graphics-generator icons -R 'tools/launcher icon.py'"
+        " --manifest manifest-premium.xml --jungle premium.jungle --icon-root premium"
+        " --fallback-icon premium/resources-base/drawables/launcher_icon.png"
+    )
+
+
+def test_the_recorded_command_reruns_with_its_renderer(tmp_path, monkeypatch):
+    project, devices = make_project(tmp_path)
+    make_edition(project)
+    (project / "tools").mkdir()
+    (project / "tools" / "icon.py").write_text(
+        "from PIL import Image\n"
+        "def render(size):\n"
+        "    return Image.new('RGB', (size, size), 'green')\n"
+    )
+    # Generated from outside the project, with the renderer found from there ...
+    monkeypatch.chdir(tmp_path)
+    options = ["icons", "-p", "project", "-d", str(devices), "-q"]
+    edition_options = [
+        "--manifest",
+        "manifest-premium.xml",
+        "--jungle",
+        "premium.jungle",
+        "--icon-root",
+        "premium",
+        "--no-fallback-icon",
+    ]
+    assert main(options + ["-R", "project/tools/icon.py"]) == 0
+    assert main(options + edition_options + ["-R", "project/tools/icon.py"]) == 0
+    jungles = {
+        name: (project / name).read_text()
+        for name in ("monkey.jungle", "premium.jungle")
+    }
+    # ... and rerun from inside it, pasted as recorded.
+    monkeypatch.chdir(project)
+    for (name, jungle), icon in zip(
+        jungles.items(), ["resources-icon-70", "premium/resources-icon-70"]
+    ):
+        command = regenerate_command(jungle)
+        assert shlex.split(command)[2:4] == ["-R", "tools/icon.py"]
+        (project / icon / "drawables" / "launcher_icon.png").unlink()
+        assert main(shlex.split(command)[1:] + ["-d", str(devices), "-q"]) == 0
+        assert (project / icon / "drawables" / "launcher_icon.png").exists()
+        assert (project / name).read_text() == jungle
 
 
 def test_the_recorded_command_quotes_a_path_with_a_space(tmp_path):
