@@ -1,5 +1,7 @@
 import os
 import shutil
+import sys
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -369,18 +371,61 @@ class TestResolveTimezone:
             resolve_timezone(value, [str(tmp_path)])
 
     @pytest.mark.parametrize(
-        "content",
-        [
-            b"TZif\0" + b"\0" * 40 + b"\n",
-            b"TZif2" + b"\0" * 40 + b"\n\n",
-            b"not a zone\n",
-        ],
+        "rule, version",
+        [("JST-9", b"\0"), ("", b"2"), ("not a rule", b"2"), ("EST\u0665", b"2")],
     )
-    def test_a_file_without_a_rule_does_not_resolve(self, tmp_path, content):
-        """Version 1 has no footer; an empty footer and a stray file give none."""
-        (tmp_path / "Odd").write_bytes(content)
+    def test_a_file_without_a_rule_does_not_resolve(self, tmp_path, rule, version):
+        """Version 1 has no footer; nor does an empty one, or one glibc cannot read."""
+        path = make_zone(tmp_path, "Odd", "", version)
+        if rule:
+            path.write_bytes(path.read_bytes()[:-1] + rule.encode("utf-8") + b"\n")
         with pytest.raises(ShotsError, match="unknown time zone"):
             resolve_timezone("Odd", [str(tmp_path)])
+
+    def test_a_stray_file_does_not_resolve(self, tmp_path):
+        (tmp_path / "Odd").write_bytes(b"not a zone\n")
+        with pytest.raises(ShotsError, match="unknown time zone"):
+            resolve_timezone("Odd", [str(tmp_path)])
+
+    def test_a_zone_file_wins_over_the_rule_its_name_spells(self, tmp_path):
+        """EST5EDT is both; the file says when daylight time starts, glibc guesses."""
+        make_zone(tmp_path, "EST5EDT", "EST5EDT,M3.2.0,M11.1.0")
+        assert resolve_timezone("EST5EDT", [str(tmp_path)]) == "EST5EDT,M3.2.0,M11.1.0"
+
+    def test_a_rule_needs_no_database(self, tmp_path):
+        assert resolve_timezone("JST-9", [str(tmp_path / "none")]) == "JST-9"
+
+    def test_non_ascii_digits_are_not_a_rule(self, tmp_path):
+        """glibc reads only ASCII digits, and runs anything else at UTC."""
+        with pytest.raises(ShotsError, match="unknown time zone"):
+            resolve_timezone("EST\u0665", [str(tmp_path)])
+
+    @pytest.mark.parametrize("value", ["..\\Asia\\Tokyo", "Asia\\..\\..\\Odd"])
+    def test_a_backslash_cannot_leave_the_database(self, tmp_path, value):
+        """A separator on Windows: the zone outside the database is not read."""
+        (tmp_path / "db").mkdir()
+        make_zone(tmp_path, "Asia/Tokyo", "JST-9")
+        make_zone(tmp_path, "Odd", "JST-9")
+        with pytest.raises(ShotsError, match="unknown time zone"):
+            resolve_timezone(value, [str(tmp_path / "db")])
+
+    def test_a_host_without_a_database_says_so(self, tmp_path):
+        """Not "unknown": the name may be right, and the fix is to install one."""
+        with pytest.raises(ShotsError, match="no zone database"):
+            resolve_timezone("Asia/Tokyo", [str(tmp_path / "none")])
+
+    def test_the_tzdata_package_is_searched_last(self, tmp_path, monkeypatch):
+        package = tmp_path / "tzdata"
+        package.mkdir()
+        spec = SimpleNamespace(origin=str(package / "__init__.py"))
+        monkeypatch.setattr(shots.importlib.util, "find_spec", lambda _: spec)
+        assert shots._zone_directories()[-1] == str(package / "zoneinfo")
+
+    def test_python_3_8_searches_the_default_path(self, monkeypatch):
+        """zoneinfo is 3.9's; without it, its default search path is used."""
+        monkeypatch.setitem(sys.modules, "zoneinfo", None)
+        monkeypatch.setattr(shots.importlib.util, "find_spec", lambda _: None)
+        assert shots._zone_directories() == list(shots._FALLBACK_TZPATH)
 
     def test_the_hosts_own_database_is_searched_by_default(self):
         """Wherever this runs, UTC is in its zone database or in tzdata."""

@@ -274,9 +274,13 @@ _FALLBACK_TZPATH = (
 # A POSIX TZ rule, which glibc reads without a zone database: a standard name and
 # offset, then optionally a daylight name, its offset, and the two dates between
 # which it applies. ``EST5``, ``MSK-3``, ``<+0530>-5:30``, ``EST5EDT,M3.2.0,M11.1.0``.
+# ASCII only: glibc reads no other digits, and a rule it cannot read is UTC.
 _POSIX_NAME = r"(?:[A-Za-z]{3,}|<[A-Za-z0-9+-]{3,}>)"
-_POSIX_OFFSET = r"[+-]?\d{1,3}(?::\d{2}){0,2}"
-_POSIX_DATE = r"(?:J\d{1,3}|\d{1,3}|M\d{1,2}\.\d\.\d)(?:/[+-]?\d{1,3}(?::\d{2}){0,2})?"
+_POSIX_OFFSET = r"[+-]?[0-9]{1,3}(?::[0-9]{2}){0,2}"
+_POSIX_DATE = (
+    r"(?:J[0-9]{1,3}|[0-9]{1,3}|M[0-9]{1,2}\.[0-9]\.[0-9])"
+    r"(?:/[+-]?[0-9]{1,3}(?::[0-9]{2}){0,2})?"
+)
 _POSIX_TZ = re.compile(
     rf"{_POSIX_NAME}{_POSIX_OFFSET}"
     rf"(?:{_POSIX_NAME}(?:{_POSIX_OFFSET})?(?:,{_POSIX_DATE},{_POSIX_DATE})?)?"
@@ -322,7 +326,22 @@ def _zone_rule(path: str) -> Optional[str]:
         rule = footer.decode("ascii")
     except UnicodeDecodeError:
         return None
-    return rule or None
+    # Checked, so that a file that only looks like a zone cannot become the TZ.
+    return rule if _POSIX_TZ.fullmatch(rule) else None
+
+
+def _zone_parts(name: str) -> Optional[List[str]]:
+    """
+    ``name``'s path components within a zone database, or None if it leaves one.
+
+    Split on either separator, so that ``..\\x`` is caught on Windows too.
+    """
+    parts = re.split(r"[\\/]", name)
+    if os.path.isabs(name) or os.path.splitdrive(name)[0]:
+        return None
+    if any(part in ("", os.curdir, os.pardir) for part in parts):
+        return None
+    return parts
 
 
 def resolve_timezone(value: str, directories: Optional[Sequence[str]] = None) -> str:
@@ -332,24 +351,30 @@ def resolve_timezone(value: str, directories: Optional[Sequence[str]] = None) ->
     The image has no zone database, and glibc meets a zone name it cannot find a
     file for by running at UTC, silently. A POSIX rule needs no file, so a name is
     looked up here, on the host, and replaced with the rule its zone file ends in:
-    ``Asia/Tokyo`` becomes ``JST-9``. A value that is already a rule is passed
-    through as it is.
+    ``Asia/Tokyo`` becomes ``JST-9``. A value that is not a zone but is already a
+    rule is passed through as it is.
+
+    The zone file is tried first: ``EST5EDT`` is both, and its file gives the dates
+    explicitly where the bare rule leaves them to glibc's default.
     """
     text = value.strip()
-    if _POSIX_TZ.fullmatch(text):
-        return text
+    if directories is None:
+        directories = _zone_directories()
     # glibc's own spelling of "this is a file name", which changes nothing here.
     name = text[1:] if text.startswith(":") else text
-    parts = name.split("/")
-    if (
-        name
-        and not os.path.isabs(name)
-        and all(part not in ("", os.curdir, os.pardir) for part in parts)
-    ):
-        for directory in _zone_directories() if directories is None else directories:
+    parts = _zone_parts(name) if name else None
+    if parts is not None:
+        for directory in directories:
             rule = _zone_rule(os.path.join(directory, *parts))
             if rule is not None:
                 return rule
+    if _POSIX_TZ.fullmatch(text):
+        return text
+    if not any(os.path.isdir(directory) for directory in directories):
+        raise ShotsError(
+            f"cannot look up time zone {value!r}: this host has no zone database; "
+            "install the tzdata package, or give a POSIX TZ rule such as JST-9"
+        )
     raise ShotsError(
         f"unknown time zone {value!r}: give a zone name such as Asia/Tokyo, or a "
         "POSIX TZ rule such as JST-9"
