@@ -9,6 +9,11 @@ EXTENSION_PNG = ".png"
 MODE_RGBA = "RGBA"
 WHITE_PIXEL_THRESHOLD = 240
 
+# The hero's canvas coverage target: the percentage of the canvas area the images aim
+# to fill together. The default is in data/defaults.json.
+MIN_COVERAGE = 1
+MAX_COVERAGE = 100
+
 # Launcher icons. The SDK publishes the required size per device in
 # Devices/<product>/compiler.json, which is what DEFAULT_DEVICES_DIRECTORY points at
 # on macOS; pass --devices-directory on any other platform.

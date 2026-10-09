@@ -12,7 +12,13 @@ from typing import List, Optional, Tuple
 
 from PIL import Image
 
-from .constants import DEFAULT_CONFIG_PATH, EXTENSION_PNG, MODE_RGBA
+from .constants import (
+    DEFAULT_CONFIG_PATH,
+    EXTENSION_PNG,
+    MAX_COVERAGE,
+    MIN_COVERAGE,
+    MODE_RGBA,
+)
 
 # Load defaults from JSON to separate data from logic
 with open(DEFAULT_CONFIG_PATH, "r", encoding="utf-8") as _f:
@@ -109,6 +115,7 @@ class WatchHeroGenerator:
         self._size_variation: int = _DEFAULTS["size_variation"]
         self._orientation_variation: int = _DEFAULTS["orientation_variation"]
         self._max_overlap: int = _DEFAULTS["max_overlap"]
+        self._coverage: int = _DEFAULTS["coverage"]
 
         # Internal state
         self._processed_images: List[Image.Image] = []
@@ -160,6 +167,23 @@ class WatchHeroGenerator:
         Sets the allowed overlap percentage (0-100).
         """
         self._max_overlap = max(0, min(100, overlap_percent))
+        return self
+
+    def set_coverage(self, coverage_percent: int) -> "WatchHeroGenerator":
+        """
+        Sets the percentage of the canvas (1-100) the images aim to fill together.
+
+        It decides how large the images are drawn, not where: a denser composition
+        raises this and raises the overlap cap enough for the layout to succeed.
+        Unlike the overlap cap it is not clamped, since a value of 0 or past 100
+        is a mistake rather than an extreme.
+        """
+        if not MIN_COVERAGE <= coverage_percent <= MAX_COVERAGE:
+            raise ValueError(
+                f"coverage must be {MIN_COVERAGE}..{MAX_COVERAGE} percent, "
+                f"got {coverage_percent}"
+            )
+        self._coverage = coverage_percent
         return self
 
     def prepare_output_directory(self) -> "WatchHeroGenerator":
@@ -303,7 +327,8 @@ class WatchHeroGenerator:
         layout = self._attempt_layout(scale, partial=True)
         logger.warning(
             "Could only place %d of %d images in %dx%d after %d attempts. "
-            "Try a larger --hero-file-size, a higher --overlap, or fewer images.",
+            "Try a larger --hero-file-size, a higher --overlap, a lower --coverage, "
+            "or fewer images.",
             len(layout),
             len(self._processed_images),
             *self._hero_size,
@@ -353,9 +378,11 @@ class WatchHeroGenerator:
         canvas_w, canvas_h = self._hero_size
         canvas_area = canvas_w * canvas_h
 
-        # Heuristic: Aim for total image area to cover roughly 60% of canvas
-        # to allow for spacing and rotation buffers.
-        target_total_area = canvas_area * 0.6
+        # Heuristic: aim for the total image area to cover the coverage target
+        # (60% by default) of the canvas, to allow for spacing and rotation buffers.
+        # The fraction is taken first: 60 / 100 is the very double the literal 0.6
+        # was, so the default reproduces the old layouts to the pixel.
+        target_total_area = canvas_area * (self._coverage / 100)
         target_area_per_image = target_total_area / num_images
 
         # We assume images are roughly square for this estimation

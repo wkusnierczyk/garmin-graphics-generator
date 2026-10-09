@@ -31,6 +31,8 @@ from .constants import (
     FALLBACK_ICON_PATH,
     JUNGLE_NAME,
     MANIFEST_NAME,
+    MAX_COVERAGE,
+    MIN_COVERAGE,
 )
 from .launcher_icons import LauncherIconError, LauncherIconGenerator, load_renderer
 from .shots import (
@@ -81,6 +83,23 @@ def counted(minimum: int):
         if value is None or value < minimum:
             raise argparse.ArgumentTypeError(
                 f"expected a whole number of at least {minimum}, got {text}"
+            )
+        return value
+
+    return parse
+
+
+def bounded(minimum: int, maximum: int):
+    """An argparse type for a whole number from ``minimum`` to ``maximum``."""
+
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            value = None
+        if value is None or not minimum <= value <= maximum:
+            raise argparse.ArgumentTypeError(
+                f"expected a whole number from {minimum} to {maximum}, got {text}"
             )
         return value
 
@@ -139,6 +158,16 @@ def add_hero_arguments(parser: argparse.ArgumentParser):
         type=int,
         default=0,
         help="0..100, percentage of allowed overlap between images",
+    )
+    parser.add_argument(
+        "--coverage",
+        type=bounded(MIN_COVERAGE, MAX_COVERAGE),
+        default=60,
+        help=(
+            f"{MIN_COVERAGE}..{MAX_COVERAGE}, percentage of the canvas the images aim "
+            "to fill together; raise it with --overlap for a denser composition "
+            "(default: 60)"
+        ),
     )
 
     parser.add_argument(
@@ -589,6 +618,7 @@ def run_hero(args, parser: argparse.ArgumentParser) -> int:
         .set_resized_width(args.resized_file_width)
         .set_variations(args.size_variation, args.orientation_variation)
         .set_max_overlap(args.overlap)
+        .set_coverage(args.coverage)
         .prepare_output_directory()
         .process_input_images()
         .generate_hero_composition()

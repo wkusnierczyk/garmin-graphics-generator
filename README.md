@@ -477,6 +477,25 @@ garmin-graphics-generator hero \
    my_watch_1.jpg my_watch_2.jpg
 ```
 
+How dense a hero comes out is two settings:
+
+* `--overlap` (`0..100`, default `0`) caps how much of one image another may cover, in percent of the
+  smaller of the two. It permits crowding but does not ask for it.
+* `--coverage` (`1..100`, default `60`) is the percentage of the canvas the images aim to fill
+  together, which decides how large they are drawn. Each image is sized as if it were square, so
+  tall watch renders fill somewhat less than the figure says.
+
+A denser composition, with larger watches sitting closer, is asked for by raising both: the coverage
+to make the watches larger, and the overlap cap enough to let them fit. Raising only the overlap gives
+the same small watches, occasionally touching; raising only the coverage can ask for more than fits
+without overlap. A coverage too ambitious for the canvas does not fail: the layout retries at
+shrinking sizes and settles for a slightly smaller arrangement.
+
+```bash
+# five watches, larger and closer than the defaults give
+garmin-graphics-generator hero -o ./output --coverage 85 --overlap 25 watch-*.png
+```
+
 The CLI has four commands, `shots`, `hero`, `compose` and `icons`. An invocation naming none of them is treated
 as `hero`, so the flat form the tool had before `icons` existed keeps working.
 
