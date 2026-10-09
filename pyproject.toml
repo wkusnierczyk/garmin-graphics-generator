@@ -21,7 +21,8 @@ dependencies = [
     "Pillow>=10.0.0",
     "rembg>=2.0.50",
     "numpy>=1.24.0",
-    "onnxruntime>=1.16.0"
+    "onnxruntime>=1.16.0",
+    "tzdata; sys_platform == 'win32'"
 ]
 
 [project.urls]

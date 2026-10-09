@@ -119,6 +119,15 @@ in `ghcr.io/matco/connectiq-tester`, which also carries the per-product device d
 SDK's own archive does not. `Xvfb -fbdir` maps the framebuffer onto a file in X Window Dump format,
 so reading a frame is a file copy: no `xwd`, `scrot` or ImageMagick either.
 
+Nor does it carry a zone database, and glibc runs a zone name it cannot find at UTC, silently. So
+`--timezone` is resolved on the host: a name such as `Asia/Tokyo` is looked up in the host's zone
+database (or the `tzdata` package), and that zone file is copied into the work directory for the
+container's `TZ` to name. The whole file is copied, not just the rule it ends in, because that rule
+only holds after the file's last transition: the rule in Africa/Casablanca's file says +01 all year,
+yet the zone still drops to +00 for Ramadan.
+A POSIX rule such as `JST-9` is passed through as given, once its fields are checked to be in range,
+and a name that resolves to nothing is an error.
+
 ### How a frame is cut
 
 Everything needed is published by the SDK, so this is a crop at known coordinates rather than an
@@ -529,7 +538,8 @@ options:
   --platform PLATFORM   Container platform, e.g. linux/amd64 on an arm64 machine
   --screen SCREEN       Virtual display size; must be larger than the device render (default:
                         1280x1024)
-  --timezone TIMEZONE   TZ for the container, which is the time the captured face shows
+  --timezone TIMEZONE   Time zone the captured face shows: a name such as Asia/Tokyo, or a POSIX
+                        TZ rule such as JST-9
   --timeout TIMEOUT     Seconds to allow the build and simulator start, which is where an emulated
                         run spends its time (default: 1800)
   --ready-timeout READY_TIMEOUT
