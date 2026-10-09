@@ -146,7 +146,12 @@ class WatchHeroGenerator:
         return self
 
     def set_resized_width(self, width: int) -> "WatchHeroGenerator":
-        """Sets the target width for resized individual images."""
+        """Sets the target width for resized individual images, at least 1 pixel."""
+        # bool is an int subclass, and True would otherwise pass as 1.
+        if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+            raise ValueError(
+                f"resized width must be a whole number of at least 1, got {width!r}"
+            )
         self._resized_width = width
         return self
 

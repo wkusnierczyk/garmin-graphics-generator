@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
+from garmin_graphics_generator import cli
 from garmin_graphics_generator.core import WatchHeroGenerator
 
 
@@ -115,3 +116,27 @@ def test_a_very_wide_input_keeps_a_resized_height_of_at_least_one(tmp_path):
     assert len(list(tmp_path.iterdir())) == 1
     resized = Image.open(tmp_path / f"wide{gen._resized_suffix}.png")
     assert resized.size == (10, 1)
+
+
+@pytest.mark.parametrize("width", [0, -1, True, 10.5, "10"])
+def test_a_resized_width_below_one_or_not_whole_is_refused(width):
+    """#42: a width of 0 or less reached Image.resize, which raised."""
+    with pytest.raises(ValueError, match="resized width"):
+        WatchHeroGenerator().set_resized_width(width)
+
+
+def test_a_resized_width_of_one_is_accepted():
+    # pylint: disable=protected-access
+    assert WatchHeroGenerator().set_resized_width(1)._resized_width == 1
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "10.5", "wide"])
+def test_the_cli_refuses_a_resized_width_below_one(tmp_path, capsys, value):
+    """#42: the CLI gives a usage error, not a traceback."""
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["hero", "-o", str(tmp_path / "o"), "-w", value, "w.png"])
+    assert raised.value.code == 2
+    error = capsys.readouterr().err
+    assert "--resized-file-width" in error
+    assert f"expected a whole number of at least 1, got {value}" in error
+    assert not (tmp_path / "o").exists()

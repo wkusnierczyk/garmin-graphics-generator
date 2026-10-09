@@ -541,6 +541,9 @@ garmin-graphics-generator hero \
    my_watch_1.jpg my_watch_2.jpg
 ```
 
+`--resized-file-width` (`-w`, at least `1`, default `200`) is the width in pixels of each resized
+copy; its height keeps the input's aspect ratio, and is never less than 1 pixel.
+
 How dense a hero comes out is two settings:
 
 * `--overlap` (`0..100`, default `0`) caps how much of one image another may cover, in percent of the

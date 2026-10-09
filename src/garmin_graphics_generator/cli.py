@@ -190,7 +190,7 @@ def add_hero_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "-w",
         "--resized-file-width",
-        type=int,
+        type=counted(1),
         default=200,
         help="Width of resized files",
     )
