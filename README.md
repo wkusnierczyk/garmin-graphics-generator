@@ -121,8 +121,11 @@ so reading a frame is a file copy: no `xwd`, `scrot` or ImageMagick either.
 
 Nor does it carry a zone database, and glibc runs a zone name it cannot find at UTC, silently. So
 `--timezone` is resolved on the host: a name such as `Asia/Tokyo` is looked up in the host's zone
-database (or the `tzdata` package) and passed in as the POSIX rule its zone file ends in, `JST-9`. A
-POSIX rule is passed through as given, and a name that resolves to nothing is an error.
+database (or the `tzdata` package), and that zone file is copied into the work directory for the
+container's `TZ` to name. The whole file rather than the rule it ends in, which only holds after its
+last transition: Africa/Casablanca's says +01 all year, yet the zone still drops to +00 for Ramadan.
+A POSIX rule such as `JST-9` is passed through as given, once its fields are checked to be in range,
+and a name that resolves to nothing is an error.
 
 ### How a frame is cut
 

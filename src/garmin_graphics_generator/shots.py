@@ -77,6 +77,8 @@ STATUS_NAME = "status"
 PROBE_NAME = "probe.xwd"
 GO_PREFIX = "go"
 VARIANTS_SUBDIRECTORY = "variants"
+# The zone file a named --timezone is copied to, for the container's TZ to name.
+ZONE_NAME = "zone"
 
 
 class ShotsError(Exception):
@@ -276,15 +278,67 @@ _FALLBACK_TZPATH = (
 # which it applies. ``EST5``, ``MSK-3``, ``<+0530>-5:30``, ``EST5EDT,M3.2.0,M11.1.0``.
 # ASCII only: glibc reads no other digits, and a rule it cannot read is UTC.
 _POSIX_NAME = r"(?:[A-Za-z]{3,}|<[A-Za-z0-9+-]{3,}>)"
-_POSIX_OFFSET = r"[+-]?[0-9]{1,3}(?::[0-9]{2}){0,2}"
-_POSIX_DATE = (
-    r"(?:J[0-9]{1,3}|[0-9]{1,3}|M[0-9]{1,2}\.[0-9]\.[0-9])"
-    r"(?:/[+-]?[0-9]{1,3}(?::[0-9]{2}){0,2})?"
-)
+_POSIX_TIME = r"[+-]?[0-9]{1,3}(?::[0-9]{2}){0,2}"
+_POSIX_DATE = r"J[0-9]{1,3}|[0-9]{1,3}|M[0-9]{1,2}\.[0-9]\.[0-9]"
 _POSIX_TZ = re.compile(
-    rf"{_POSIX_NAME}{_POSIX_OFFSET}"
-    rf"(?:{_POSIX_NAME}(?:{_POSIX_OFFSET})?(?:,{_POSIX_DATE},{_POSIX_DATE})?)?"
+    rf"{_POSIX_NAME}(?P<std>{_POSIX_TIME})"
+    rf"(?:{_POSIX_NAME}(?P<dst>{_POSIX_TIME})?"
+    rf"(?:,(?P<start>{_POSIX_DATE})(?:/(?P<start_time>{_POSIX_TIME}))?"
+    rf",(?P<end>{_POSIX_DATE})(?:/(?P<end_time>{_POSIX_TIME}))?)?)?"
 )
+# The largest hour glibc takes in an offset, and in a transition time: TZif v3
+# lets a transition fall up to a week either side of its day, ``M3.5.0/-1``.
+_OFFSET_HOURS = 24
+_TRANSITION_HOURS = 167
+
+
+class TimeZone(NamedTuple):
+    """
+    What the container's TZ is made from: a POSIX rule given as it is, or the
+    host's file for a named zone, to be copied in.
+    """
+
+    rule: Optional[str] = None
+    path: Optional[str] = None
+
+
+def _time_in_range(text: str, hours: int) -> bool:
+    fields = [int(field) for field in text.lstrip("+-").split(":")]
+    return fields[0] <= hours and all(field <= 59 for field in fields[1:])
+
+
+def _date_in_range(text: str) -> bool:
+    if text.startswith("J"):
+        return 1 <= int(text[1:]) <= 365
+    if text.startswith("M"):
+        month, week, day = (int(field) for field in text[1:].split("."))
+        return 1 <= month <= 12 and 1 <= week <= 5 and day <= 6
+    return int(text) <= 365
+
+
+def _is_posix_rule(text: str) -> bool:
+    """
+    Whether glibc reads ``text`` as the rule it spells.
+
+    The ranges are checked as well as the shape: glibc clamps an offset it finds
+    too large rather than refusing it, so ``ABC999`` would run, at UTC-24.
+    """
+    match = _POSIX_TZ.fullmatch(text)
+    if match is None:
+        return False
+    for group, hours in (
+        ("std", _OFFSET_HOURS),
+        ("dst", _OFFSET_HOURS),
+        ("start_time", _TRANSITION_HOURS),
+        ("end_time", _TRANSITION_HOURS),
+    ):
+        if match[group] is not None and not _time_in_range(match[group], hours):
+            return False
+    return all(
+        _date_in_range(match[group])
+        for group in ("start", "end")
+        if match[group] is not None
+    )
 
 
 def _zone_directories() -> List[str]:
@@ -302,32 +356,13 @@ def _zone_directories() -> List[str]:
     return directories
 
 
-def _zone_rule(path: str) -> Optional[str]:
-    """
-    The POSIX rule at the end of a TZif file, or None if it carries none.
-
-    From version 2 on, a TZif file ends in a newline-enclosed footer that is the
-    zone's rule for every time after its last transition. A version 1 file has no
-    footer, and an empty one means the zone has no rule to give.
-    """
+def _is_zone_file(path: str) -> bool:
+    """Whether ``path`` is a TZif file, which is what glibc reads a zone from."""
     try:
         with open(path, "rb") as stream:
-            data = stream.read()
+            return stream.read(4) == b"TZif"
     except OSError:
-        return None
-    if (
-        not data.startswith(b"TZif")
-        or data[4:5] in (b"\0", b"")
-        or not data.endswith(b"\n")
-    ):
-        return None
-    footer = data[:-1].rsplit(b"\n", 1)[-1]
-    try:
-        rule = footer.decode("ascii")
-    except UnicodeDecodeError:
-        return None
-    # Checked, so that a file that only looks like a zone cannot become the TZ.
-    return rule if _POSIX_TZ.fullmatch(rule) else None
+        return False
 
 
 def _zone_parts(name: str) -> Optional[List[str]]:
@@ -344,18 +379,21 @@ def _zone_parts(name: str) -> Optional[List[str]]:
     return parts
 
 
-def resolve_timezone(value: str, directories: Optional[Sequence[str]] = None) -> str:
+def resolve_timezone(
+    value: str, directories: Optional[Sequence[str]] = None
+) -> TimeZone:
     """
-    Turns ``value`` into a TZ the tester image can honour, or raises ShotsError.
+    Turns ``value`` into a time zone the tester image can honour, or raises.
 
     The image has no zone database, and glibc meets a zone name it cannot find a
-    file for by running at UTC, silently. A POSIX rule needs no file, so a name is
-    looked up here, on the host, and replaced with the rule its zone file ends in:
-    ``Asia/Tokyo`` becomes ``JST-9``. A value that is not a zone but is already a
-    rule is passed through as it is.
+    file for by running at UTC, silently. So a name is looked up here, on the host,
+    and its file is what the container is given. The whole file, not just the rule
+    it ends in: that rule only holds after the file's last transition, and a zone
+    such as Africa/Casablanca has years of explicit transitions still ahead.
 
-    The zone file is tried first: ``EST5EDT`` is both, and its file gives the dates
-    explicitly where the bare rule leaves them to glibc's default.
+    A value that names no zone but is a POSIX rule is given as it is; glibc needs
+    no file for one. The zone is tried first: ``EST5EDT`` is both, and its file
+    says when daylight time starts where the bare rule leaves it to glibc.
     """
     text = value.strip()
     if directories is None:
@@ -365,11 +403,11 @@ def resolve_timezone(value: str, directories: Optional[Sequence[str]] = None) ->
     parts = _zone_parts(name) if name else None
     if parts is not None:
         for directory in directories:
-            rule = _zone_rule(os.path.join(directory, *parts))
-            if rule is not None:
-                return rule
-    if _POSIX_TZ.fullmatch(text):
-        return text
+            path = os.path.join(directory, *parts)
+            if os.path.isfile(path) and _is_zone_file(path):
+                return TimeZone(path=path)
+    if _is_posix_rule(text):
+        return TimeZone(rule=text)
     if not any(os.path.isdir(directory) for directory in directories):
         raise ShotsError(
             f"cannot look up time zone {value!r}: this host has no zone database; "
@@ -379,6 +417,17 @@ def resolve_timezone(value: str, directories: Optional[Sequence[str]] = None) ->
         f"unknown time zone {value!r}: give a zone name such as Asia/Tokyo, or a "
         "POSIX TZ rule such as JST-9"
     )
+
+
+def _install_timezone(zone: TimeZone, work_directory: str) -> str:
+    """
+    The container's TZ for ``zone``, copying a zone file into the work directory,
+    which the container sees as ``/out``.
+    """
+    if zone.path is None:
+        return zone.rule
+    shutil.copyfile(zone.path, os.path.join(work_directory, ZONE_NAME))
+    return f":/out/{ZONE_NAME}"
 
 
 def _clear_previous_run(work_directory: str) -> None:
@@ -393,7 +442,7 @@ def _clear_previous_run(work_directory: str) -> None:
     for name in os.listdir(work_directory):
         path = os.path.join(work_directory, name)
         if (
-            name in (STATUS_NAME, PROBE_NAME)
+            name in (STATUS_NAME, PROBE_NAME, ZONE_NAME)
             or name.startswith(GO_PREFIX + "-")
             or (name.startswith(FRAME_PREFIX + "-") and name.endswith(".xwd"))
         ):
@@ -515,11 +564,9 @@ def run_builds(
         raise ShotsError("nothing to build")
     if prg is not None and (len(builds) > 1 or builds[0].files):
         raise ShotsError("a prebuilt .prg cannot be varied; build from the project")
-    if timezone is not None:
-        rule = resolve_timezone(timezone)
-        if rule != timezone:
-            logger.info("Time zone %s is %s", timezone, rule)
-        timezone = rule
+    zone = None if timezone is None else resolve_timezone(timezone)
+    if zone is not None and zone.path is not None:
+        logger.info("Time zone %s is %s", timezone, zone.path)
 
     if not docker_available():
         raise ShotsError(
@@ -567,8 +614,8 @@ def run_builds(
         environment["WORK_IN_PROJECT"] = relative_work
     if prg is not None:
         environment["PRG"] = prg
-    if timezone is not None:
-        environment["TZ"] = timezone
+    if zone is not None:
+        environment["TZ"] = _install_timezone(zone, work_directory)
 
     command = ["docker", "run", "--detach"]
     if platform:
