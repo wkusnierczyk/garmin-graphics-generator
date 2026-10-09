@@ -26,8 +26,8 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/wkusnierczyk/garmin_graphics_generator"
-"Source" = "https://github.com/wkusnierczyk/garmin_graphics_generator"
+"Homepage" = "https://github.com/wkusnierczyk/garmin-graphics-generator"
+"Source" = "https://github.com/wkusnierczyk/garmin-graphics-generator"
 
 [project.scripts]
 garmin-graphics-generator = "garmin_graphics_generator.cli:main"
