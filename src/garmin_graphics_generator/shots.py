@@ -126,11 +126,13 @@ class Shot(NamedTuple):
 _CLEAR_APP_STATE = r"""
 APPS="${SIM_APPS:-/tmp/com.garmin.connectiq/GARMIN/APPS}"
 clear_app_state() {
-  local kept
+  local kept left
   for kept in "$APPS/SETTINGS" "$APPS/DATA"; do
     [ -d "$kept" ] || continue
-    # Looked at again: BSD find can fail to delete a file and still exit 0.
-    find "$kept" -type f -delete -print && [ -z "$(find "$kept" -type f)" ] || {
+    # Looked at again: BSD find can fail to delete a file and still exit 0. A
+    # look that fails counts as a failure, not as finding nothing.
+    find "$kept" -type f -delete -print \
+      && left="$(find "$kept" -type f)" && [ -z "$left" ] || {
       echo "shots: could not clear the app's settings and storage in $kept" >&2
       echo "failed clearing" > "$OUT/status"
       exit 1

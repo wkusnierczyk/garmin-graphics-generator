@@ -603,22 +603,31 @@ def make_apps(tmp_path):
     return apps
 
 
-def find_that_does_not_delete(tmp_path):
+def stub_find(tmp_path, otherwise):
     """
     A PATH whose find reports success for -delete and deletes nothing, as BSD find
-    does with a file it cannot remove, and is the real find otherwise.
+    does with a file it cannot remove, and runs ``otherwise`` for any other search.
     """
-    real = shutil.which("find")
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     stub = stubs / "find"
     stub.write_text(
         "#!/bin/sh\n"
         'for argument in "$@"; do [ "$argument" = -delete ] && exit 0; done\n'
-        f'exec "{real}" "$@"\n'
+        f"{otherwise}\n"
     )
     stub.chmod(0o755)
     return f"{stubs}{os.pathsep}{os.environ['PATH']}"
+
+
+def find_that_does_not_delete(tmp_path):
+    """The stub find, which is the real find for the look afterwards."""
+    return stub_find(tmp_path, f'exec "{shutil.which("find")}" "$@"')
+
+
+def find_that_cannot_look(tmp_path):
+    """The stub find, whose look afterwards fails and prints nothing."""
+    return stub_find(tmp_path, "echo 'find: Permission denied' >&2; exit 1")
 
 
 @pytest.mark.skipif(BASH is None, reason="needs bash")
@@ -687,6 +696,36 @@ class TestClearAppState:
         assert cleared.returncode != 0
         assert "could not clear" in cleared.stderr
         assert (tmp_path / shots.STATUS_NAME).read_text().strip() == shots.CLEAR_FAILED
+
+    def test_a_look_that_fails_is_not_taken_for_nothing_left(self, tmp_path):
+        """An empty listing from a find that failed proves nothing was removed."""
+        apps = make_apps(tmp_path)
+
+        cleared = clear_app_state(apps, tmp_path, find_that_cannot_look(tmp_path))
+
+        assert (apps / "DATA" / "SHOTS-1.DAT").exists()
+        assert cleared.returncode != 0
+        assert "could not clear" in cleared.stderr
+        assert (tmp_path / shots.STATUS_NAME).read_text().strip() == shots.CLEAR_FAILED
+
+    def test_files_below_data_are_removed_too(self, tmp_path):
+        """
+        #30 saw these directories empty; a fresh install has nothing in them either,
+        whatever the simulator may keep there for an app that fills them.
+        """
+        apps = make_apps(tmp_path)
+        nested = [
+            apps / "DATA/MEDIA/OBJSTORE/SHOTS-1/comp/0001",
+            apps / "DATA/AUXFILE/SHOTS-1.AUX",
+        ]
+        for path in nested:
+            path.write_bytes(b"x")
+
+        cleared = clear_app_state(apps, tmp_path)
+
+        assert cleared.returncode == 0, cleared.stderr
+        assert not any(path.exists() for path in nested)
+        assert (apps / "DATA/MEDIA/OBJSTORE/SHOTS-1/comp").is_dir()
 
     def test_the_setup_script_clears_before_each_simulator_starts(self):
         script = shots._SETUP_SCRIPT
