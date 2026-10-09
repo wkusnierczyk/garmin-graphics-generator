@@ -406,8 +406,9 @@ def resolve_timezone(
             path = os.path.join(directory, *parts)
             if os.path.isfile(path) and _is_zone_file(path):
                 return TimeZone(path=path)
-    if _is_posix_rule(text):
-        return TimeZone(rule=text)
+    # glibc reads ``:JST-9`` as a rule too, once no file by that name is found.
+    if _is_posix_rule(name):
+        return TimeZone(rule=name)
     if not any(os.path.isdir(directory) for directory in directories):
         raise ShotsError(
             f"cannot look up time zone {value!r}: this host has no zone database; "

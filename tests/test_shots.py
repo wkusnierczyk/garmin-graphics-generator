@@ -422,6 +422,10 @@ class TestResolveTimezone:
         path = make_zone(tmp_path, "EST5EDT", "EST5EDT,M3.2.0,M11.1.0")
         assert resolve_timezone("EST5EDT", [str(tmp_path)]).path == str(path)
 
+    def test_a_rule_may_take_glibcs_leading_colon(self, tmp_path):
+        """glibc falls back to reading :JST-9 as a rule when no file has that name."""
+        assert resolve_timezone(":JST-9", [str(tmp_path)]) == TimeZone(rule="JST-9")
+
     def test_a_rule_needs_no_database(self, tmp_path):
         assert resolve_timezone("JST-9", [str(tmp_path / "none")]).rule == "JST-9"
 
